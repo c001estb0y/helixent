@@ -30,14 +30,7 @@ export function App({
   commands: SlashCommand[];
   supportProjectWideAllow?: boolean;
 }) {
-  const {
-    streaming,
-    messages,
-    onSubmit,
-    abort,
-    resumeRequest,
-    handleResumeSelect,
-  } = useAgentLoop();
+  const { streaming, messages, onSubmit, abort, resumeRequest, handleResumeSelect } = useAgentLoop();
   const { approvalRequest, respondToApproval } = useApprovalManager();
   const { askUserQuestionRequest, respondWithAnswers } = useAskUserQuestionManager();
   const { latestTodos, todoSnapshots } = useMemo(() => buildTodoViewState(messages), [messages]);
