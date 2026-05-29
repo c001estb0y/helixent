@@ -1,7 +1,8 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync, utimesSync } from "fs";
-import { join } from "path";
 import { tmpdir } from "os";
+import { join } from "path";
+
+import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 
 import { sanitizeCwd, getProjectDir, appendEntry, loadTranscript, listSessions } from "../transcript-storage";
 

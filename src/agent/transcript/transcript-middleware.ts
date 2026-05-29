@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { join } from "path";
 
 import type { AgentMiddleware } from "../agent-middleware";
+
 import { appendEntry, getProjectDir } from "./transcript-storage";
 
 /**

@@ -1,7 +1,8 @@
-import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync, readdirSync } from "fs";
-import { join } from "path";
 import { tmpdir } from "os";
+import { join } from "path";
+
+import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 
 import { createTranscriptMiddleware } from "../transcript-middleware";
 
@@ -36,14 +37,14 @@ describe("createTranscriptMiddleware", () => {
     const mw = createTranscriptMiddleware({ cwd: tmpDir, projectDir: tmpDir });
     const agentContext = {
       prompt: "test",
-      messages: [{ role: "user" as const, content: [{ type: "text" as const, text: "hello" }] }],
+      messages: [
+        { role: "user", content: [{ type: "text", text: "hello" }] },
+      ] as Array<{ role: "user" | "assistant"; content: Array<{ type: "text"; text: string }> }>,
     };
 
     await mw.beforeAgentRun!({ agentContext: agentContext as any });
 
-    agentContext.messages.push(
-      { role: "assistant" as const, content: [{ type: "text" as const, text: "hi" }] },
-    );
+    agentContext.messages.push({ role: "assistant", content: [{ type: "text", text: "hi" }] });
     await mw.afterAgentStep!({ agentContext: agentContext as any, step: 1 });
 
     const files = readdirSync(tmpDir).filter((f: string) => f.endsWith(".jsonl"));

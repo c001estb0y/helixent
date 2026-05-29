@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "fs";
-import { dirname, join } from "path";
 import { homedir } from "os";
+import { dirname, join } from "path";
 
 import type { NonSystemMessage } from "@/foundation";
 
