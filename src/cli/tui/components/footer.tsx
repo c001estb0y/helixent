@@ -11,14 +11,17 @@ function formatTokenCount(count: number): string {
 }
 
 export function Footer() {
-  const { agent, tokenCount } = useAgentLoop();
+  const { agent, tokenUsage } = useAgentLoop();
   return (
     <Box paddingX={2} width="100%">
       <Box flexGrow={1} justifyContent="flex-start">
         <Text color={currentTheme.colors.dimText}>{agent.model.name}</Text>
       </Box>
       <Box justifyContent="flex-end">
-        <Text color={currentTheme.colors.dimText}>{formatTokenCount(tokenCount)} tokens</Text>
+        <Text color={currentTheme.colors.dimText}>
+          last input {formatTokenCount(tokenUsage.latestInputTokens)} · session{" "}
+          {formatTokenCount(tokenUsage.sessionTotalTokens)}
+        </Text>
       </Box>
     </Box>
   );
