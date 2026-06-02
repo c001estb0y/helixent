@@ -41,15 +41,15 @@ describe("fileInfoTool", () => {
     }
   });
 
-  test("returns structured error for relative path", async () => {
+  test("resolves relative path against cwd when file is missing", async () => {
     const result = await fileInfoTool.invoke({
-      description: "Inspect invalid path",
-      path: "demo.txt",
+      description: "Inspect missing relative path",
+      path: "helixent-nonexistent-relative-path-xyz.txt",
     });
 
     expect(result).toMatchObject({
       ok: false,
-      code: "INVALID_PATH",
+      code: "STAT_FAILED",
     });
   });
 });

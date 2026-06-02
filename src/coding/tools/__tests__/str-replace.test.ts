@@ -114,14 +114,14 @@ describe("strReplaceTool", () => {
     expect(result).toMatchObject({ ok: false, code: "NOT_FOUND" });
   });
 
-  test("returns error for relative path", async () => {
+  test("resolves relative path against cwd when file is missing", async () => {
     const result = await strReplaceTool.invoke({
       description: "Relative path test",
-      path: "relative/file.txt",
+      path: "helixent-nonexistent-relative-str-replace.txt",
       old: "a",
       new: "b",
     });
 
-    expect(result).toMatchObject({ ok: false, code: "INVALID_PATH" });
+    expect(result).toMatchObject({ ok: false, code: "FILE_NOT_FOUND" });
   });
 });

@@ -25,11 +25,12 @@ export const globSearchTool = defineTool({
     if (!dirCheck.ok) {
       return errorToolResult(dirCheck.error, "INVALID_DIRECTORY", { path, pattern });
     }
+    const searchDir = dirCheck.path;
 
     const matches: string[] = [];
     try {
       const globber = new Bun.Glob(pattern);
-      for await (const entry of globber.scan({ cwd: path, absolute: true })) {
+      for await (const entry of globber.scan({ cwd: searchDir, absolute: true })) {
         matches.push(entry);
         if (matches.length >= (limit ?? DEFAULT_LIMIT)) {
           break;
@@ -42,7 +43,7 @@ export const globSearchTool = defineTool({
 
     const limited = truncateText(matches.join("\n"), maxChars ?? DEFAULT_MAX_CHARS);
     return okToolResult(`Found ${matches.length} files matching ${pattern}`, {
-      path,
+      path: searchDir,
       pattern,
       matchCount: matches.length,
       truncated: limited.truncated,

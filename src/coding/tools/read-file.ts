@@ -3,7 +3,7 @@ import z from "zod";
 import { defineTool } from "@/foundation";
 
 import { errorToolResult } from "./tool-result";
-import { ensureAbsolutePath, truncateText } from "./tool-utils";
+import { resolveAbsolutePath, truncateText } from "./tool-utils";
 
 const DEFAULT_MAX_CHARS = 12000;
 
@@ -20,10 +20,11 @@ export const readFileTool = defineTool({
     maxChars: z.number().int().positive().describe("Maximum characters to return from the selected range.").optional(),
   }),
   invoke: async ({ path, startLine, endLine, maxChars }) => {
-    const absolute = ensureAbsolutePath(path);
-    if (!absolute.ok) {
-      return errorToolResult(absolute.error, "INVALID_PATH", { path });
+    const resolved = resolveAbsolutePath(path);
+    if (!resolved.ok) {
+      return errorToolResult(resolved.error, "INVALID_PATH", { path });
     }
+    const filePath = resolved.path;
 
     if (startLine !== undefined && endLine !== undefined && startLine > endLine) {
       return errorToolResult("startLine must be less than or equal to endLine.", "INVALID_RANGE", {
@@ -33,9 +34,9 @@ export const readFileTool = defineTool({
       });
     }
 
-    const file = Bun.file(path);
+    const file = Bun.file(filePath);
     if (!(await file.exists())) {
-      return errorToolResult(`File ${path} does not exist.`, "FILE_NOT_FOUND", { path });
+      return errorToolResult(`File ${filePath} does not exist.`, "FILE_NOT_FOUND", { path: filePath });
     }
 
     const text = await file.text();
@@ -44,8 +45,8 @@ export const readFileTool = defineTool({
     const end = endLine ? Math.min(endLine, lines.length) : lines.length;
 
     if (start < 0 || start >= lines.length) {
-      return errorToolResult(`startLine ${startLine} is out of range for file ${path}.`, "START_LINE_OUT_OF_RANGE", {
-        path,
+      return errorToolResult(`startLine ${startLine} is out of range for file ${filePath}.`, "START_LINE_OUT_OF_RANGE", {
+        path: filePath,
         startLine,
         totalLines: lines.length,
       });

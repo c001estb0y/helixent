@@ -72,13 +72,20 @@ describe("writeFileTool", () => {
     await expect(readFile(filePath, "utf8")).resolves.toBe("deep content\n");
   });
 
-  test("returns error for relative path", async () => {
-    const result = await writeFileTool.invoke({
-      description: "Relative path test",
-      path: "relative/path.txt",
-      content: "should fail",
-    });
+  test("resolves relative path against cwd", async () => {
+    const name = `helixent-write-rel-${Date.now()}.txt`;
+    const expected = join(process.cwd(), name);
+    try {
+      const result = await writeFileTool.invoke({
+        description: "Relative path test",
+        path: name,
+        content: "resolved",
+      });
 
-    expect(result).toMatchObject({ ok: false, code: "INVALID_PATH" });
+      expect(result).toMatchObject({ ok: true, data: { path: expected } });
+      await expect(readFile(expected, "utf8")).resolves.toBe("resolved");
+    } finally {
+      await rm(expected, { force: true });
+    }
   });
 });

@@ -5,7 +5,7 @@ import z from "zod";
 import { defineTool } from "@/foundation";
 
 import { errorToolResult, okToolResult } from "./tool-result";
-import { ensureAbsolutePath } from "./tool-utils";
+import { resolveAbsolutePath } from "./tool-utils";
 
 export const mkdirTool = defineTool({
   name: "mkdir",
@@ -18,17 +18,18 @@ export const mkdirTool = defineTool({
     recursive: z.boolean().describe("Whether to create parent directories recursively.").optional(),
   }),
   invoke: async ({ path, recursive }) => {
-    const absolute = ensureAbsolutePath(path);
-    if (!absolute.ok) {
-      return errorToolResult(absolute.error, "INVALID_PATH", { path });
+    const resolved = resolveAbsolutePath(path);
+    if (!resolved.ok) {
+      return errorToolResult(resolved.error, "INVALID_PATH", { path });
     }
+    const dirPath = resolved.path;
 
     try {
-      await mkdir(path, { recursive: recursive ?? true });
-      return okToolResult(`Created directory: ${path}`, { path, recursive: recursive ?? true });
+      await mkdir(dirPath, { recursive: recursive ?? true });
+      return okToolResult(`Created directory: ${dirPath}`, { path: dirPath, recursive: recursive ?? true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return errorToolResult(`Failed to create directory: ${path}`, "MKDIR_FAILED", { path, message });
+      return errorToolResult(`Failed to create directory: ${dirPath}`, "MKDIR_FAILED", { path: dirPath, message });
     }
   },
 });

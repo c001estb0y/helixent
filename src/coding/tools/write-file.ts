@@ -6,7 +6,7 @@ import z from "zod";
 import { defineTool } from "@/foundation";
 
 import { errorToolResult, okToolResult } from "./tool-result";
-import { ensureAbsolutePath } from "./tool-utils";
+import { resolveAbsolutePath } from "./tool-utils";
 
 export const writeFileTool = defineTool({
   name: "write_file",
@@ -19,27 +19,28 @@ export const writeFileTool = defineTool({
     content: z.string().describe("The content to write to the file."),
   }),
   invoke: async ({ path, content }) => {
-    const absolute = ensureAbsolutePath(path);
-    if (!absolute.ok) {
-      return errorToolResult(absolute.error, "INVALID_PATH", { path });
+    const resolved = resolveAbsolutePath(path);
+    if (!resolved.ok) {
+      return errorToolResult(resolved.error, "INVALID_PATH", { path });
     }
+    const filePath = resolved.path;
 
     try {
       // Ensure parent directory exists
-      const parentDir = parse(path).dir;
+      const parentDir = parse(filePath).dir;
       if (!(await exists(parentDir))) {
         await mkdir(parentDir, { recursive: true });
       }
 
-      const file = Bun.file(path);
+      const file = Bun.file(filePath);
       await file.write(content);
-      return okToolResult(`Successfully wrote ${content.length} chars to ${path}`, {
-        path,
+      return okToolResult(`Successfully wrote ${content.length} chars to ${filePath}`, {
+        path: filePath,
         bytes: content.length,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return errorToolResult(`Failed to write file: ${path}`, "WRITE_FAILED", { path, message });
+      return errorToolResult(`Failed to write file: ${filePath}`, "WRITE_FAILED", { path: filePath, message });
     }
   },
 });

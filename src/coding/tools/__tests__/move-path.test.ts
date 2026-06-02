@@ -39,16 +39,16 @@ describe("movePathTool", () => {
     await expect(readFile(to, "utf8")).resolves.toBe("payload\n");
   });
 
-  test("returns structured error for relative source path", async () => {
+  test("resolves relative source against cwd when file is missing", async () => {
     const result = await movePathTool.invoke({
-      description: "Move invalid source",
-      from: "from.txt",
+      description: "Move missing relative source",
+      from: "helixent-nonexistent-move-from.txt",
       to: join(tempDir, "to.txt"),
     });
 
     expect(result).toMatchObject({
       ok: false,
-      code: "INVALID_SOURCE_PATH",
+      code: "MOVE_FAILED",
     });
   });
 });

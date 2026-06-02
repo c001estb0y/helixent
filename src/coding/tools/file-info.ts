@@ -5,7 +5,7 @@ import z from "zod";
 import { defineTool } from "@/foundation";
 
 import { errorToolResult, okToolResult } from "./tool-result";
-import { ensureAbsolutePath } from "./tool-utils";
+import { resolveAbsolutePath } from "./tool-utils";
 
 export const fileInfoTool = defineTool({
   name: "file_info",
@@ -17,16 +17,17 @@ export const fileInfoTool = defineTool({
     path: z.string().describe("The absolute path to inspect."),
   }),
   invoke: async ({ path }) => {
-    const absolute = ensureAbsolutePath(path);
-    if (!absolute.ok) {
-      return errorToolResult(absolute.error, "INVALID_PATH", { path });
+    const resolved = resolveAbsolutePath(path);
+    if (!resolved.ok) {
+      return errorToolResult(resolved.error, "INVALID_PATH", { path });
     }
+    const filePath = resolved.path;
 
     try {
-      const info = await stat(path);
+      const info = await stat(filePath);
       const kind = info.isDirectory() ? "directory" : info.isFile() ? "file" : "other";
-      return okToolResult(`Inspected ${kind}: ${path}`, {
-        path,
+      return okToolResult(`Inspected ${kind}: ${filePath}`, {
+        path: filePath,
         kind,
         size: info.size,
         modifiedTime: info.mtime.toISOString(),
@@ -34,7 +35,7 @@ export const fileInfoTool = defineTool({
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return errorToolResult(`Failed to inspect path: ${path}`, "STAT_FAILED", { path, message });
+      return errorToolResult(`Failed to inspect path: ${filePath}`, "STAT_FAILED", { path: filePath, message });
     }
   },
 });

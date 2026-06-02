@@ -6,6 +6,7 @@ import z from "zod";
 import { defineTool } from "@/foundation";
 
 import { errorToolResult, okToolResult } from "./tool-result";
+import { resolveAbsolutePath } from "./tool-utils";
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@$/;
 
@@ -27,6 +28,13 @@ type PatchFile = {
 
 function normalizePatchPath(rawPath: string) {
   return rawPath.replace(/^b\//, "").replace(/^a\//, "");
+}
+
+function resolvePatchPath(rawPath: string) {
+  if (rawPath === "/dev/null") {
+    return { ok: false as const, error: "Patch path /dev/null is not a filesystem path." };
+  }
+  return resolveAbsolutePath(rawPath);
 }
 
 function parsePatch(patch: string): PatchFile[] {
@@ -189,13 +197,6 @@ export const applyPatchTool = defineTool({
       const changedFiles: string[] = [];
 
       for (const file of files) {
-        if (!file.newPath.startsWith("/")) {
-          return errorToolResult(`Patch paths must be absolute. Received: ${file.newPath}`, "INVALID_PATCH_PATH", {
-            oldPath: file.oldPath,
-            newPath: file.newPath,
-          });
-        }
-
         if (file.newPath === "/dev/null") {
           return errorToolResult(
             "File deletion (+++ /dev/null) is currently not supported by apply_patch.",
@@ -207,17 +208,26 @@ export const applyPatchTool = defineTool({
           );
         }
 
-        const target = Bun.file(file.newPath);
+        const resolvedNew = resolvePatchPath(file.newPath);
+        if (!resolvedNew.ok) {
+          return errorToolResult(resolvedNew.error, "INVALID_PATCH_PATH", {
+            oldPath: file.oldPath,
+            newPath: file.newPath,
+          });
+        }
+        const newPath = resolvedNew.path;
+
+        const target = Bun.file(newPath);
         const original = (await target.exists()) ? await target.text() : "";
         const updated = applyHunks(original, file);
-        const parent = dirname(file.newPath);
+        const parent = dirname(newPath);
 
         if (!(await exists(parent))) {
           await mkdir(parent, { recursive: true });
         }
 
         await target.write(updated);
-        changedFiles.push(file.newPath);
+        changedFiles.push(newPath);
       }
 
       return okToolResult(`Applied patch to ${changedFiles.length} file(s).`, {
