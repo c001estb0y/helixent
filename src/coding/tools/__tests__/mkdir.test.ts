@@ -39,15 +39,19 @@ describe("mkdirTool", () => {
     });
   });
 
-  test("returns structured error for relative path", async () => {
-    const result = await mkdirTool.invoke({
-      description: "Create invalid path",
-      path: "relative/path",
-    });
+  test("resolves relative path against cwd", async () => {
+    const relDir = join(`helixent-mkdir-rel-${Date.now()}`, "nested");
+    const expected = join(process.cwd(), relDir);
+    try {
+      const result = await mkdirTool.invoke({
+        description: "Create relative directory",
+        path: relDir,
+        recursive: true,
+      });
 
-    expect(result).toMatchObject({
-      ok: false,
-      code: "INVALID_PATH",
-    });
+      expect(result).toMatchObject({ ok: true, data: { path: expected } });
+    } finally {
+      await rm(expected, { recursive: true, force: true });
+    }
   });
 });

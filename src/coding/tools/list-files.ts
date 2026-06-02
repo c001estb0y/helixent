@@ -46,12 +46,13 @@ export const listFilesTool = defineTool({
       return errorToolResult(dirCheck.error, "INVALID_DIRECTORY", { path });
     }
 
-    const entries = await walk(path, recursive ? (maxDepth ?? 3) : 0);
+    const listDir = dirCheck.path;
+    const entries = await walk(listDir, recursive ? (maxDepth ?? 3) : 0);
     const capped = entries.slice(0, limit ?? DEFAULT_LIMIT);
     const limited = truncateText(capped.join("\n"), maxChars ?? DEFAULT_MAX_CHARS);
 
-    return okToolResult(`Listed ${capped.length} entries under ${path}`, {
-      path,
+    return okToolResult(`Listed ${capped.length} entries under ${listDir}`, {
+      path: listDir,
       totalEntries: entries.length,
       shownEntries: capped.length,
       truncated: limited.truncated || capped.length < entries.length,

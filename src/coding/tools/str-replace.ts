@@ -3,7 +3,7 @@ import z from "zod";
 import { defineTool } from "@/foundation";
 
 import { errorToolResult, okToolResult } from "./tool-result";
-import { ensureAbsolutePath } from "./tool-utils";
+import { resolveAbsolutePath } from "./tool-utils";
 
 export const strReplaceTool = defineTool({
   name: "str_replace",
@@ -23,26 +23,27 @@ export const strReplaceTool = defineTool({
       .optional(),
   }),
   invoke: async ({ path, old, new: replacement, count }) => {
-    const absolute = ensureAbsolutePath(path);
-    if (!absolute.ok) {
-      return errorToolResult(absolute.error, "INVALID_PATH", { path });
+    const resolved = resolveAbsolutePath(path);
+    if (!resolved.ok) {
+      return errorToolResult(resolved.error, "INVALID_PATH", { path });
     }
+    const filePath = resolved.path;
 
-    const file = Bun.file(path);
+    const file = Bun.file(filePath);
     if (!(await file.exists())) {
-      return errorToolResult(`File ${path} does not exist.`, "FILE_NOT_FOUND", { path });
+      return errorToolResult(`File ${filePath} does not exist.`, "FILE_NOT_FOUND", { path: filePath });
     }
 
     if (old.length === 0) {
-      return errorToolResult("`old` must be a non-empty string.", "INVALID_ARGUMENT", { path });
+      return errorToolResult("`old` must be a non-empty string.", "INVALID_ARGUMENT", { path: filePath });
     }
 
     const text = await file.text();
 
     const maxReplacements = count ?? Number.POSITIVE_INFINITY;
     if (maxReplacements === 0) {
-      return okToolResult(`No replacements requested (count=0) in ${path}`, {
-        path,
+      return okToolResult(`No replacements requested (count=0) in ${filePath}`, {
+        path: filePath,
         replacements: 0,
         changed: false,
       });
@@ -59,7 +60,7 @@ export const strReplaceTool = defineTool({
     }
 
     if (replacements === 0) {
-      return errorToolResult(`No occurrences of 'old' found in ${path}.`, "NOT_FOUND", { path });
+      return errorToolResult(`No occurrences of 'old' found in ${filePath}.`, "NOT_FOUND", { path: filePath });
     }
 
     let updated: string;
@@ -75,8 +76,8 @@ export const strReplaceTool = defineTool({
     }
 
     if (updated === text) {
-      return okToolResult(`No effective changes in ${path}`, {
-        path,
+      return okToolResult(`No effective changes in ${filePath}`, {
+        path: filePath,
         replacements: 0,
         changed: false,
       });
@@ -84,14 +85,14 @@ export const strReplaceTool = defineTool({
 
     try {
       await file.write(updated);
-      return okToolResult(`Replaced ${replacements} occurrence(s) in ${path}`, {
-        path,
+      return okToolResult(`Replaced ${replacements} occurrence(s) in ${filePath}`, {
+        path: filePath,
         replacements,
         changed: true,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return errorToolResult(`Failed to write replacement to ${path}`, "WRITE_FAILED", { path, message });
+      return errorToolResult(`Failed to write replacement to ${filePath}`, "WRITE_FAILED", { path: filePath, message });
     }
   },
 });

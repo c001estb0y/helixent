@@ -27,6 +27,7 @@ export const grepSearchTool = defineTool({
     if (!dirCheck.ok) {
       return errorToolResult(dirCheck.error, "INVALID_DIRECTORY", { path, pattern, glob });
     }
+    const searchDir = dirCheck.path;
 
     const cmd = ["rg", "--line-number", "--no-heading"];
     if (!caseSensitive) {
@@ -35,7 +36,7 @@ export const grepSearchTool = defineTool({
     if (glob) {
       cmd.push("--glob", glob);
     }
-    cmd.push(pattern, path);
+    cmd.push(pattern, searchDir);
 
     try {
       const proc = Bun.spawn({
@@ -55,7 +56,7 @@ export const grepSearchTool = defineTool({
       if (exitCode !== 0 && exitCode !== 1) {
         const stderr = await new Response(proc.stderr).text();
         return errorToolResult(`grep_search failed with exit code ${exitCode}`, "GREP_FAILED", {
-          path,
+          path: searchDir,
           pattern,
           glob,
           exitCode,
@@ -67,7 +68,7 @@ export const grepSearchTool = defineTool({
       const capped = lines.slice(0, limit ?? DEFAULT_LIMIT);
       const limited = truncateText(capped.join("\n"), maxChars ?? DEFAULT_MAX_CHARS);
       return okToolResult(`Found ${lines.length} matches for ${pattern}`, {
-        path,
+        path: searchDir,
         pattern,
         glob,
         caseSensitive: Boolean(caseSensitive),
@@ -81,12 +82,12 @@ export const grepSearchTool = defineTool({
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("No such file or directory") || message.includes("not found")) {
         return errorToolResult("Failed to run 'rg' (ripgrep). Please ensure ripgrep is installed and available in PATH.", "RG_NOT_FOUND", {
-          path,
+          path: searchDir,
           pattern,
           message,
         });
       }
-      return errorToolResult("grep_search failed to execute.", "GREP_EXEC_FAILED", { path, pattern, message });
+      return errorToolResult("grep_search failed to execute.", "GREP_EXEC_FAILED", { path: searchDir, pattern, message });
     }
   },
 });
