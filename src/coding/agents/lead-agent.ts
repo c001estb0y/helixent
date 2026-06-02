@@ -17,7 +17,8 @@ import {
   type AskUserQuestionParameters,
   type AskUserQuestionResult,
 } from "../tools/ask-user-question";
-import { bashTool } from "../tools/bash";
+import { createBashTool } from "../tools/bash";
+import { setWorkspaceBaseDir } from "../tools/tool-utils";
 import { fileInfoTool } from "../tools/file-info";
 import { globSearchTool } from "../tools/glob-search";
 import { grepSearchTool } from "../tools/grep-search";
@@ -45,6 +46,9 @@ export async function createCodingAgent({
   askUserQuestion?: (params: AskUserQuestionParameters) => Promise<AskUserQuestionResult>;
   approvalPersistence?: ApprovalPersistence;
 }) {
+  setWorkspaceBaseDir(cwd);
+  const bashTool = createBashTool({ cwd });
+
   const agentsFile = Bun.file(`${cwd}/AGENTS.md`);
   const messages: NonSystemMessage[] = [];
   if (await agentsFile.exists()) {

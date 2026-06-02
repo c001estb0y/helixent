@@ -4,9 +4,16 @@ import { isAbsolute, normalize, relative, resolve, sep } from "node:path";
 
 const NULL_BYTE = "\0";
 
+let workspaceBaseDir = process.cwd();
+
+/** Set the agent workspace root used for relative path resolution in file tools. */
+export function setWorkspaceBaseDir(cwd: string): void {
+  workspaceBaseDir = cwd;
+}
+
 /** Default base for resolving relative paths (agent workspace). */
 export function getPathBaseDir(): string {
-  return process.cwd();
+  return workspaceBaseDir;
 }
 
 /** Convert Git-Bash/MSYS style `/c/foo` to `C:\foo` on Windows. */
