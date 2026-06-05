@@ -1,0 +1,14 @@
+# HELIXENT PROJECT EXPLORATION
+
+## Session Resumption, Agent Loop Core, and Session Persistence
+
+A comprehensive exploration of Helixent session management.
+
+### KEY STATISTICS
+- Agent Loop Core: 362 lines (src/agent/agent.ts)
+- Session Storage: 94 lines (src/agent/transcript/transcript-storage.ts)
+- React Context: 261 lines (src/cli/tui/hooks/use-agent-loop.ts)
+- Resume UI: 78 lines (src/cli/tui/components/resume-prompt.tsx)
+- Middleware Hooks: 8 lifecycle points
+- Storage Format: Append-only JSONL
+- Storage Location: ~/.helixent/projects/{sanitized-cwd}/{uuid}.jsonl
