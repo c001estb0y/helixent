@@ -1,7 +1,7 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-import type { Agent } from "@/agent";
+import { AgentRunner, Session, type Agent, type TurnRun } from "@/agent";
 import type { AssistantMessage, NonSystemMessage, UserMessage } from "@/foundation";
 
 import type { PromptSubmission, SlashCommand } from "../command-registry";
@@ -22,63 +22,61 @@ const AgentLoopContext = createContext<AgentLoopState | null>(null);
 
 export function AgentLoopProvider({
   agent,
+  session,
   commands = [],
   children,
 }: {
   agent: Agent;
+  session: Session;
   commands?: SlashCommand[];
   children: ReactNode;
 }) {
   const [streaming, setStreaming] = useState(false);
-  const [messages, setMessages] = useState<NonSystemMessage[]>([]);
-
+  const [messages, setMessages] = useState<NonSystemMessage[]>(session.messages);
+  const sessionRef = useRef(session);
   const streamingRef = useRef(streaming);
-  const pendingMessagesRef = useRef<NonSystemMessage[]>([]);
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentRunRef = useRef<TurnRun | null>(null);
+  const activeTurnIdRef = useRef<string | null>(null);
+  const queuedSubmissionRef = useRef<PromptSubmission | null>(null);
+  const onSubmitRef = useRef<AgentLoopState["onSubmit"] | null>(null);
+
   useEffect(() => {
     streamingRef.current = streaming;
   }, [streaming]);
 
-  const flushPendingMessages = useCallback(() => {
-    if (flushTimerRef.current) {
-      clearTimeout(flushTimerRef.current);
-      flushTimerRef.current = null;
-    }
-
-    if (pendingMessagesRef.current.length === 0) return;
-
-    const pending = pendingMessagesRef.current;
-    pendingMessagesRef.current = [];
-    setMessages((prev) => [...prev, ...pending]);
-  }, []);
-
-  const enqueueMessage = useCallback(
-    (message: NonSystemMessage) => {
-      pendingMessagesRef.current.push(message);
-      if (flushTimerRef.current) return;
-
-      flushTimerRef.current = setTimeout(() => {
-        flushPendingMessages();
-      }, 50);
-    },
-    [flushPendingMessages],
-  );
-
-  useEffect(() => {
-    return () => {
-      if (flushTimerRef.current) {
-        clearTimeout(flushTimerRef.current);
-      }
-    };
-  }, []);
-
   const abort = useCallback(() => {
-    agent.abort();
-  }, [agent]);
+    currentRunRef.current?.interrupt();
+  }, []);
 
   const tokenUsage = useMemo(() => {
     return calculateTokenUsage(messages);
   }, [messages]);
+
+  const runTurn = useCallback(
+    async (turnId: string) => {
+      const runSession = sessionRef.current;
+      const run = new AgentRunner().startTurn({ session: runSession, agent, turnId });
+      currentRunRef.current = run;
+
+      let runError: unknown;
+      const done = run.done.catch((error: unknown) => {
+        runError = error;
+      });
+
+      for await (const event of run.events) {
+        if (event.type === "message" || event.type === "turn_interrupted" || event.type === "turn_completed") {
+          setMessages(runSession.messages);
+        }
+      }
+
+      await done;
+      currentRunRef.current = null;
+      if (runError) {
+        throw runError;
+      }
+    },
+    [agent],
+  );
 
   const onSubmit = useCallback(
     async (submission: PromptSubmission) => {
@@ -90,18 +88,22 @@ export function AgentLoopProvider({
         return;
       }
 
-      if (streamingRef.current) return;
+      if (streamingRef.current) {
+        queuedSubmissionRef.current = submission;
+        return;
+      }
 
       if (invocation?.name === "clear") {
-        agent.clearMessages();
-        flushPendingMessages();
+        const nextSession = new Session({ contextBlocks: sessionRef.current.contextBlocks });
+        sessionRef.current = nextSession;
+        activeTurnIdRef.current = null;
+        queuedSubmissionRef.current = null;
         setMessages([]);
         clearTerminal();
         return;
       }
 
       if (invocation?.name === "help") {
-        flushPendingMessages();
         const userMessage: UserMessage = { role: "user", content: [{ type: "text", text }] };
         const helpMessage: AssistantMessage = {
           role: "assistant",
@@ -116,38 +118,57 @@ export function AgentLoopProvider({
         return;
       }
 
+      const runSession = sessionRef.current;
+      const activeTurnId = activeTurnIdRef.current;
+      const activeTurn = activeTurnId ? runSession.getTurn(activeTurnId) : undefined;
+      const turn =
+        activeTurn?.status === "interrupted"
+          ? runSession.continueTurn(activeTurn.id, text)
+          : runSession.createTurn({
+              agentId: agent.id,
+              input: text,
+              options: { requestedSkillName },
+            });
+
+      activeTurnIdRef.current = turn.id;
+      setMessages(runSession.messages);
+      streamingRef.current = true;
       setStreaming(true);
 
       try {
-        agent.setRequestedSkillName(requestedSkillName);
-        const userMessage: UserMessage = { role: "user", content: [{ type: "text", text }] };
-        setMessages((prev) => [...prev, userMessage]);
-
-        const stream = agent.stream(userMessage);
-        for await (const event of stream) {
-          if (event.type === "message") {
-            enqueueMessage(event.message);
-          }
-          // progress events intentionally ignored: the UI shows a generic
-          // "Thinking..." shimmer driven by the `streaming` boolean, and
-          // MessageHistory is the single source of truth for tool calls.
-        }
+        await runTurn(turn.id);
       } catch (error) {
-        if (isAbortError(error)) return;
-        // Display API/model errors as assistant messages instead of crashing
         const errorMessage = error instanceof Error ? error.message : String(error);
-        enqueueMessage({
-          role: "assistant",
-          content: [{ type: "text", text: `Error: ${errorMessage}\n\nYou can try again.` }],
-        });
+        setMessages([
+          ...runSession.messages,
+          {
+            role: "assistant",
+            content: [{ type: "text", text: `Error: ${errorMessage}\n\nYou can try again.` }],
+          },
+        ]);
       } finally {
-        agent.setRequestedSkillName(null);
-        flushPendingMessages();
+        const finalTurn = runSession.getTurn(turn.id);
+        setMessages(runSession.messages);
+        streamingRef.current = false;
         setStreaming(false);
+        if (finalTurn?.status !== "interrupted") {
+          activeTurnIdRef.current = null;
+          const queuedSubmission = queuedSubmissionRef.current;
+          queuedSubmissionRef.current = null;
+          if (queuedSubmission) {
+            queueMicrotask(() => {
+              void onSubmitRef.current?.(queuedSubmission);
+            });
+          }
+        }
       }
     },
-    [agent, commands, enqueueMessage, flushPendingMessages],
+    [agent.id, commands, runTurn],
   );
+
+  useEffect(() => {
+    onSubmitRef.current = onSubmit;
+  }, [onSubmit]);
 
   const value = useMemo(
     () => ({
@@ -167,20 +188,13 @@ export function AgentLoopProvider({
 function useAgentLoopState(): AgentLoopState {
   const state = useContext(AgentLoopContext);
   if (!state) {
-    throw new Error("useAgentLoop() must be used within <AgentLoopProvider agent={...}>");
+    throw new Error("useAgentLoop() must be used within <AgentLoopProvider agent={...} session={...}>");
   }
   return state;
 }
 
 export function useAgentLoop() {
   return useAgentLoopState();
-}
-
-function isAbortError(error: unknown): boolean {
-  if (error instanceof DOMException && error.name === "AbortError") return true;
-  if (error instanceof Error && error.name === "AbortError") return true;
-  if (error instanceof Error && error.constructor.name === "APIUserAbortError") return true;
-  return false;
 }
 
 function clearTerminal() {

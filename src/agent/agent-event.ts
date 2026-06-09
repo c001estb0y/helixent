@@ -1,45 +1,57 @@
-import type { AssistantMessage, ToolMessage } from "@/foundation";
+import type { MessageId, TurnId } from "./session";
 
-/** Discriminator values for {@link AgentEvent.type}. */
-export type AgentEventType = "message" | "progress";
+/** Discriminator values for {@link TurnRunProgressEvent.subtype}. */
+export type TurnRunProgressSubtype = "thinking" | "tool";
 
-/** Discriminator values for {@link AgentProgressEvent.subtype}. */
-export type AgentProgressSubtype = "thinking" | "tool";
+/** Fired when the turn run begins execution. */
+export interface TurnStartedEvent {
+  type: "turn_started";
+  turnId: TurnId;
+}
 
-/**
- * Fired once per completed assistant turn and once per completed tool result.
- * `message.streaming` is always absent/false on events of this type.
- */
-export interface AgentMessageEvent {
+/** Fired while the model is streaming progress. */
+export type TurnRunProgressEvent =
+  | { type: "progress"; turnId: TurnId; subtype: "thinking" }
+  | { type: "progress"; turnId: TurnId; subtype: "tool"; name: string; input: unknown };
+
+/** Fired when a transcript message has been appended to the session. */
+export interface TurnRunMessageEvent {
   type: "message";
-  message: AssistantMessage | ToolMessage;
+  turnId: TurnId;
+  messageId: MessageId;
 }
 
-/**
- * Fired while the current model snapshot has only text and/or thinking
- * content — i.e. no `tool_use` entries yet.
- */
-export interface AgentProgressThinkingEvent {
-  type: "progress";
-  subtype: "thinking";
-}
-
-/**
- * Fired while the current model snapshot contains at least one `tool_use`.
- * The payload reflects the **last** `tool_use` in the snapshot; its `input`
- * may be a partial / in-progress JSON value.
- */
-export interface AgentProgressToolEvent {
-  type: "progress";
-  subtype: "tool";
-  /** Name of the most recent tool_use in the current snapshot. */
+/** Fired immediately before a tool call is invoked. */
+export interface ToolStartedEvent {
+  type: "tool_started";
+  turnId: TurnId;
+  toolUseId: string;
   name: string;
-  /** Current (possibly partial) input payload of that tool_use. */
-  input: unknown;
 }
 
-/** Union of all progress events; narrow on `subtype`. */
-export type AgentProgressEvent = AgentProgressThinkingEvent | AgentProgressToolEvent;
+/** Fired after a tool result message has been appended. */
+export interface ToolFinishedEvent {
+  type: "tool_finished";
+  turnId: TurnId;
+  toolUseId: string;
+  messageId: MessageId;
+}
 
-/** Union of all agent events; narrow on `type`, then on `subtype`. */
-export type AgentEvent = AgentMessageEvent | AgentProgressEvent;
+/** Fired when a turn reaches a terminal or interrupted state. */
+export type TurnStoppedEvent =
+  | { type: "turn_interrupted"; turnId: TurnId }
+  | { type: "turn_completed"; turnId: TurnId }
+  | { type: "turn_failed"; turnId: TurnId; error: string }
+  | { type: "turn_cancelled"; turnId: TurnId };
+
+/** Observation events emitted by a {@link TurnRun}. */
+export type TurnRunEvent =
+  | TurnStartedEvent
+  | TurnRunProgressEvent
+  | TurnRunMessageEvent
+  | ToolStartedEvent
+  | ToolFinishedEvent
+  | TurnStoppedEvent;
+
+/** Backward-compatible name for turn-run events during the runner migration. */
+export type AgentEvent = TurnRunEvent;

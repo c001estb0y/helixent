@@ -2,13 +2,13 @@
  * Quick manual check for expandPath / file tools on Windows.
  * Run: bun run scripts/verify-expand-path.ts
  */
-import { join } from "node:path";
 import { writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { expandPath, resolveAbsolutePath } from "../src/coding/tools/tool-utils";
-import { readFileTool } from "../src/coding/tools/read-file";
 import { fileInfoTool } from "../src/coding/tools/file-info";
+import { readFileTool } from "../src/coding/tools/read-file";
+import { expandPath, resolveAbsolutePath } from "../src/coding/tools/tool-utils";
 
 const repoRoot = process.cwd();
 const probeFile = join(repoRoot, "package.json");

@@ -1,9 +1,9 @@
-import { join } from "path";
+import { join } from "node:path";
 
-import { Agent } from "@/agent";
+import { Agent, Session } from "@/agent";
 import { createSkillsMiddleware } from "@/agent/skills/skills-middleware";
 import { createTodoSystem } from "@/agent/todos/todos";
-import type { Model, NonSystemMessage, ToolUseContent } from "@/foundation";
+import type { Model, ToolUseContent } from "@/foundation";
 
 import {
   type ApprovalDecision,
@@ -18,7 +18,6 @@ import {
   type AskUserQuestionResult,
 } from "../tools/ask-user-question";
 import { createBashTool } from "../tools/bash";
-import { setWorkspaceBaseDir } from "../tools/tool-utils";
 import { fileInfoTool } from "../tools/file-info";
 import { globSearchTool } from "../tools/glob-search";
 import { grepSearchTool } from "../tools/grep-search";
@@ -27,6 +26,7 @@ import { mkdirTool } from "../tools/mkdir";
 import { movePathTool } from "../tools/move-path";
 import { readFileTool } from "../tools/read-file";
 import { strReplaceTool } from "../tools/str-replace";
+import { setWorkspaceBaseDir } from "../tools/tool-utils";
 import { writeFileTool } from "../tools/write-file";
 
 export async function createCodingAgent({
@@ -49,20 +49,6 @@ export async function createCodingAgent({
   setWorkspaceBaseDir(cwd);
   const bashTool = createBashTool({ cwd });
 
-  const agentsFile = Bun.file(`${cwd}/AGENTS.md`);
-  const messages: NonSystemMessage[] = [];
-  if (await agentsFile.exists()) {
-    const agentsFileContent = await agentsFile.text();
-    messages.push({
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: "> The `AGENTS.md` file has been automatically loaded. Here is the content:\n\n" + agentsFileContent,
-        },
-      ],
-    });
-  }
   const { tool: todoTool, middleware: todoMiddleware } = createTodoSystem();
 
   const askUserQuestionTool = askUserQuestion ? createAskUserQuestionTool(askUserQuestion) : null;
@@ -80,6 +66,7 @@ export async function createCodingAgent({
   }
 
   return new Agent({
+    id: "helixent-leading-agent",
     model,
     prompt: `<agent name="Helixent" role="leading_agent" description="A coding agent">
 Use the given tools and skills to perform parallel/sequential operations and solve the user's problem in the given working directory.
@@ -103,7 +90,6 @@ Use the given tools and skills to perform parallel/sequential operations and sol
 - If the user's input is a simple task or a greeting, you should just respond with a simple answer and then stop.
 </notes>
 `,
-    messages,
     tools: [
       bashTool,
       fileInfoTool,
@@ -121,4 +107,17 @@ Use the given tools and skills to perform parallel/sequential operations and sol
     ],
     middlewares,
   });
+}
+
+export async function createCodingSession({ cwd = process.cwd() }: { cwd?: string } = {}) {
+  const agentsFile = Bun.file(`${cwd}/AGENTS.md`);
+  const contextBlocks = [];
+  if (await agentsFile.exists()) {
+    contextBlocks.push({
+      id: "agents-md",
+      source: "AGENTS.md",
+      content: await agentsFile.text(),
+    });
+  }
+  return new Session({ contextBlocks });
 }

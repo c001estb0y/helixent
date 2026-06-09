@@ -1,509 +1,428 @@
 # Helixent 项目文档
 
-> **Helixent** — 一个基于 TypeScript + Bun 构建的 ReAct 风格智能编码代理框架
+> **Helixent** - 一个基于 TypeScript + Bun 的 ReAct 风格编码代理框架。
+
+最后更新：2026-06-09
 
 ---
 
-## 目录
+## 项目概览
 
-- [项目概述](#项目概述)
-- [技术栈](#技术栈)
-- [架构设计](#架构设计)
-- [目录结构](#目录结构)
-- [核心模块详解](#核心模块详解)
-- [中间件系统](#中间件系统)
-- [工具系统](#工具系统)
-- [技能系统](#技能系统)
-- [权限与审批系统](#权限与审批系统)
-- [API 参考](#api-参考)
-- [快速上手](#快速上手)
-- [构建与测试](#构建与测试)
-- [依赖说明](#依赖说明)
-- [设计模式与亮点](#设计模式与亮点)
+Helixent 把 LLM、工具调用、会话状态、权限审批和终端 UI 组合成一个可运行的编码代理。它的核心不是单个“会聊天的类”，而是一组边界清晰的对象：
 
----
-
-## 项目概述
-
-Helixent 是一个功能完整的**自主编码代理框架**，采用 ReAct（Reasoning + Acting）循环模式，让 LLM 能够理解需求、推理问题、执行工具（如 bash、文件操作）并迭代解决编程任务。
-
-### 核心特性
-
-| 特性 | 说明 |
-|------|------|
-| **ReAct 循环** | Think → Act → Observe 循环，直到任务完成或达到最大步数 |
-| **模型无关** | 统一 `Model` 接口，支持 OpenAI、Anthropic 及兼容端点，可随时切换 |
-| **流式输出** | `AsyncGenerator<AssistantMessage>` 实时生成快照，边思考边输出 |
-| **并行工具执行** | 同一轮推理中的多个工具调用并行执行，结果按完成顺序返回 |
-| **中间件架构** | 8 个生命周期钩子，灵活扩展代理行为 |
-| **技能系统** | 支持从多个目录发现和加载 Agent Skills |
-| **Todo 管理** | 内置结构化任务追踪，自动提醒 |
-| **人机协作** | 敏感操作需人工审批，支持审批持久化 |
-| **交互式 TUI** | 基于 Ink + React 的终端界面，支持流式渲染和命令补全 |
-
-### 项目统计
-
-| 指标 | 数值 |
-|------|------|
-| TypeScript 代码量 | ~6,300 行 |
-| 内置工具数 | 11 个 |
-| 中间件钩子数 | 8 个 |
-| 测试文件数 | ~10 个 |
-| npm 版本 | v1.3.1 |
+- `Session` 保存会话事实：turn、transcript、context blocks。
+- `Turn` 表示一次任务边界：可运行、可中断、可继续。
+- `Agent` 是不可变能力配置：模型、prompt、工具、中间件。
+- `AgentRunner` 启动一次 turn。
+- `TurnRun` 持有本次运行时状态：abort、events、done、runtime context。
 
 ---
 
 ## 技术栈
 
-| 技术 | 用途 |
-|------|------|
-| **Bun** | 运行时环境，原生支持 TypeScript、高性能 I/O |
-| **TypeScript (strict)** | 开发语言，严格模式全开 |
-| **Zod v4** | Schema 验证、类型推断、JSON Schema 生成 |
-| **React 19 + Ink 6** | 终端 UI 框架 |
-| **Commander** | CLI 参数解析与路由 |
-| **OpenAI SDK** | OpenAI API 客户端 |
-| **Anthropic SDK** | Anthropic (Claude) API 客户端 |
-| **YAML** | 配置文件解析 |
+| 类别 | 技术 |
+| --- | --- |
+| Runtime / 包管理 | Bun |
+| 语言 | TypeScript strict + ESM |
+| Schema | Zod |
+| CLI | Commander |
+| TUI | React 19 + Ink |
+| Provider SDK | OpenAI SDK, Anthropic SDK |
+| 配置 | YAML |
+| 测试 | Bun test |
 
 ---
 
 ## 架构设计
 
-Helixent 采用**分层架构**，依赖方向严格自上而下：
+Helixent 采用分层架构，依赖方向严格自上而下：
 
-```
+```text
 ┌─────────────────────────────────────────────────┐
-│              Layer 5: CLI / TUI                  │
-│        (交互界面、命令管理、设置)                   │
-├─────────────────────────────────────────────────┤
-│   Layer 4: Community         Layer 3: Coding     │
-│   (OpenAI/Anthropic 适配)    (编码代理 + 工具)     │
-├─────────────────────────────────────────────────┤
-│              Layer 2: Agent Loop                 │
-│        (ReAct 循环、中间件、事件)                   │
+│              Layer 5: CLI / TUI                 │
+│        交互界面、命令管理、设置、输入路由          │
+├───────────────────────┬─────────────────────────┤
+│ Layer 4: Community    │ Layer 3: Coding          │
+│ OpenAI / Anthropic    │ 编码 Agent + 工具 + 审批  │
+├───────────────────────┴─────────────────────────┤
+│              Layer 2: Agent                      │
+│   Session / Turn / Runner / Middleware / Skills  │
 ├─────────────────────────────────────────────────┤
 │              Layer 1: Foundation                 │
-│        (消息、模型、工具 -- 零外部依赖)              │
+│        消息、模型、工具 - 稳定核心抽象             │
 └─────────────────────────────────────────────────┘
 ```
 
-**依赖规则：**
-- Foundation 不依赖任何上层
-- Agent 仅依赖 Foundation
-- Coding 依赖 Foundation（不依赖 Agent 内部实现）
-- Community 为可选适配器，仅依赖 Foundation
-- CLI 依赖所有层
+依赖规则：
+
+| 层 | 可以依赖 | 不应该依赖 |
+| --- | --- | --- |
+| `foundation` | 无 | 任何上层 |
+| `agent` | `foundation` | `coding`、`cli`、`community` |
+| `coding` | `agent`、`foundation` | `cli` |
+| `community` | `foundation` | `agent`、`coding`、`cli` |
+| `cli` | 所有下层 | 无 |
+
+---
+
+## ADR 0001 后的核心模型
+
+旧设计里，`Agent` 同时拥有 prompt、messages、streaming、abort、tools 和 middleware。现在这些职责被拆开：
+
+```text
+┌─────────────────────────────────────────────────┐
+│ Session                                         │
+│ - turns                                         │
+│ - transcript messages                           │
+│ - context blocks, e.g. AGENTS.md                │
+│ - one active turn in Phase 1                    │
+└───────────────────────┬─────────────────────────┘
+                        │ owns
+                        ▼
+┌─────────────────────────────────────────────────┐
+│ Turn                                            │
+│ - status: created/running/interrupted/...       │
+│ - inputMessageIds                               │
+│ - messageStartIndex / messageEndIndex           │
+└─────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────┐
+│ Agent                                           │
+│ - id, name                                      │
+│ - model, prompt                                 │
+│ - tools, middlewares, maxSteps                  │
+│ - no transcript, no abort controller            │
+└───────────────────────┬─────────────────────────┘
+                        │ supplied to
+                        ▼
+┌─────────────────────────────────────────────────┐
+│ AgentRunner                                     │
+│ - stateless                                     │
+│ - startTurn({ session, agent, turnId })         │
+└───────────────────────┬─────────────────────────┘
+                        │ creates
+                        ▼
+┌─────────────────────────────────────────────────┐
+│ TurnRun                                         │
+│ - AbortController                               │
+│ - events: observation stream                    │
+│ - done: completion promise                      │
+│ - runtime AgentContext                          │
+└─────────────────────────────────────────────────┘
+```
+
+状态机：
+
+```text
+created ──▶ running ──▶ completed
+              │  │
+              │  ├────▶ failed
+              │  └────▶ cancelled
+              ▼
+          interrupted ─▶ running
+              │  │
+              │  ├────▶ failed
+              │  └────▶ cancelled
+```
+
+关键原则：
+
+- `AGENTS.md` 属于 `Session.contextBlocks`，不再伪装成普通 user message。
+- `requestedSkillName` 属于 turn options，不属于 `Agent` 状态。
+- middleware 可以改 runtime/model context，但不能直接写 transcript。
+- interrupted turn 可以继续；terminal turn 不可继续。
+- 如果中断留下未配对 `tool_use`，继续前会补 synthetic `tool_result`。
+
+---
+
+## 运行流程
+
+```text
+用户输入
+  │
+  ▼
+Session.createTurn(...)
+  │  记录初始 user message
+  ▼
+AgentRunner.startTurn(...)
+  │
+  ▼
+TurnRun
+  │
+  ├─ beforeAgentRun
+  │
+  ├─ step 1..maxSteps
+  │    │
+  │    ├─ beforeAgentStep
+  │    ├─ beforeModel
+  │    ├─ model.stream(...)
+  │    ├─ afterModel
+  │    ├─ append assistant message to Session
+  │    │
+  │    ├─ no tool_use ──▶ afterAgentRun ──▶ completed
+  │    │
+  │    └─ has tool_use
+  │         ├─ run tools in parallel
+  │         ├─ append each tool_result as it finishes
+  │         └─ afterAgentStep
+  │
+  └─ done
+```
+
+TUI 路由：
+
+| 状态 | 输入 | 行为 |
+| --- | --- | --- |
+| idle | submit | 创建新 turn 并运行 |
+| running | submit | 暂存为下一 turn 输入 |
+| running | Esc / Ctrl-C | interrupt 当前 `TurnRun` |
+| interrupted | submit | 作为 steer input 继续同一 turn |
+| any | `/clear` | 新建 Session，保留 context blocks |
 
 ---
 
 ## 目录结构
 
-```
+```text
 helixent/
-├── index.ts                    # 入口文件
-├── package.json                # 包配置 (v1.3.1)
-├── tsconfig.json               # TypeScript 配置（strict, bundler 模式）
-├── eslint.config.js            # ESLint 规则
-├── bun.lock                    # Bun 锁文件
-├── CLAUDE.md                   # 架构文档（给 AI 代理阅读）
-├── AGENTS.md                   # 项目指导文件
-├── README.md / README.zh.md    # 英文/中文说明
+├─ index.ts                     # CLI 入口，导入 src/cli
+├─ src/
+│  ├─ foundation/               # 基础抽象
+│  │  ├─ messages/              # Message / content / role 类型
+│  │  ├─ models/                # Model / ModelProvider / ModelContext
+│  │  └─ tools/                 # defineTool / structured tool result
+│  │
+│  ├─ agent/                    # 通用 agent 层
+│  │  ├─ agent.ts               # Agent 能力配置对象
+│  │  ├─ session.ts             # Session / Turn / SessionMessage
+│  │  ├─ agent-runner.ts        # 无状态 runner
+│  │  ├─ turn-run.ts            # ReAct runtime loop
+│  │  ├─ agent-event.ts         # TurnRunEvent
+│  │  ├─ agent-middleware.ts    # 生命周期 hook
+│  │  ├─ skills/                # skill 发现与注入
+│  │  ├─ todos/                 # todo_write 工具与 reminder
+│  │  └─ tool-result-*.ts       # 工具结果策略与格式化
+│  │
+│  ├─ coding/                   # 编码场景层
+│  │  ├─ agents/lead-agent.ts   # createCodingAgent / createCodingSession
+│  │  ├─ tools/                 # bash/read/write/search/patch 等工具
+│  │  └─ permissions/           # 审批与 allow list
+│  │
+│  ├─ community/                # Provider 适配
+│  │  ├─ openai/
+│  │  └─ anthropic/
+│  │
+│  └─ cli/                      # 应用层
+│     ├─ bootstrap/             # first run / integrity
+│     ├─ commands/              # commander 命令
+│     ├─ config/                # 模型配置 schema
+│     ├─ settings/              # settings 加载与写入
+│     └─ tui/                   # Ink UI
 │
-├── docs/
-│   ├── bun.md                  # Bun 运行时指南
-│   ├── code-convention.md      # 代码规范（102 条规则）
-│   └── foundation.md           # 基础层文档
-│
-└── src/
-    ├── foundation/             # Layer 1: 核心原语
-    │   ├── messages/           #   消息类型系统
-    │   │   └── types/          #   content.ts, message.ts, role.ts
-    │   ├── models/             #   模型抽象
-    │   │   ├── model.ts        #   Model 类
-    │   │   ├── model-provider.ts   ModelProvider 接口
-    │   │   └── model-context.ts    ModelContext 接口
-    │   └── tools/              #   工具定义
-    │       ├── function-tool.ts    FunctionTool 接口 + defineTool()
-    │       └── structured-tool-result.ts
-    │
-    ├── agent/                  # Layer 2: ReAct 代理循环
-    │   ├── agent.ts            #   Agent 核心类（362 行）
-    │   ├── agent-event.ts      #   事件类型
-    │   ├── agent-middleware.ts  #   中间件接口（8 个钩子）
-    │   ├── tool-result-*.ts    #   工具结果处理
-    │   ├── skills/             #   技能中间件
-    │   ├── todos/              #   Todo 系统
-    │   └── __tests__/          #   单元测试
-    │
-    ├── coding/                 # Layer 3: 编码代理
-    │   ├── agents/
-    │   │   └── lead-agent.ts   #   createCodingAgent()
-    │   ├── tools/              #   11 个编码工具
-    │   │   ├── bash.ts
-    │   │   ├── read-file.ts
-    │   │   ├── write-file.ts
-    │   │   ├── str-replace.ts
-    │   │   ├── apply-patch.ts
-    │   │   ├── list-files.ts
-    │   │   ├── glob-search.ts
-    │   │   ├── grep-search.ts
-    │   │   ├── file-info.ts
-    │   │   ├── mkdir.ts
-    │   │   └── move-path.ts
-    │   └── permissions/        #   权限审批系统
-    │
-    ├── community/              # Layer 4: 社区适配器
-    │   ├── openai/             #   OpenAI 适配（~310 行）
-    │   └── anthropic/          #   Anthropic 适配（~300 行）
-    │
-    └── cli/                    # Layer 5: CLI / TUI
-        ├── bootstrap/          #   启动与完整性检查
-        ├── commands/           #   CLI 命令
-        ├── config/             #   配置 schema
-        ├── settings/           #   ~/.helixent/config.yaml 管理
-        └── tui/                #   终端 UI
-            ├── app.tsx
-            ├── command-registry.ts
-            ├── hooks/
-            └── components/
+├─ skills/                      # 项目内置 skills
+├─ docs/                        # ADR、规范、设计文档
+├─ scripts/                     # 手动验证脚本
+├─ .github/workflows/           # CI
+└─ .githooks/                   # 本地 hooks
 ```
 
 ---
 
-## 核心模块详解
+## 核心模块速查
 
-### Layer 1: Foundation（基础层）
+### Foundation
 
-#### 消息系统
+| 模块 | 作用 |
+| --- | --- |
+| `messages` | 定义 system/user/assistant/tool 消息和 content union |
+| `models` | `Model` 包装 provider，并组装 prompt/context/messages/tools |
+| `tools` | `defineTool`、Zod 参数 schema、结构化工具结果 |
 
-采用**辨别联合类型**（Discriminated Unions）：
+### Agent
 
-```typescript
-type Message = SystemMessage | UserMessage | AssistantMessage | ToolMessage
+| 文件 | 作用 |
+| --- | --- |
+| `agent.ts` | 不可变 agent 配置 |
+| `session.ts` | 持久会话状态、turn 状态机、synthetic repair |
+| `agent-runner.ts` | 校验 turn 与 agent，创建 `TurnRun` |
+| `turn-run.ts` | 模型流、工具并行、事件、abort、middleware 调度 |
+| `agent-middleware.ts` | 8 个生命周期 hook |
+| `skills/` | 发现 `SKILL.md` 并在 prompt 中注入技能列表 |
+| `todos/` | 内置 `todo_write` 和 reminder |
 
-// 五种内容类型
-interface TextContent      { type: "text"; text: string }
-interface ImageURLContent  { type: "image_url"; image_url: { url: string } }
-interface ThinkingContent  { type: "thinking"; thinking: string }
-interface ToolUseContent<T>{ type: "tool_use"; id: string; name: string; input: T }
-interface ToolResultContent{ type: "tool_result"; tool_use_id: string; content: string }
-```
+### Coding
 
-#### 模型抽象
+| 模块 | 作用 |
+| --- | --- |
+| `agents/lead-agent.ts` | 组装编码 agent；创建带 `AGENTS.md` context 的 session |
+| `tools/` | 编码工具：shell、文件、搜索、patch、提问 |
+| `permissions/` | 对敏感工具做 TUI 审批和持久化 allow |
 
-```typescript
-interface ModelProvider {
-  invoke(params: ModelProviderInvokeParams): Promise<AssistantMessage>
-  stream(params: ModelProviderInvokeParams): AsyncGenerator<AssistantMessage>
-}
+内置编码工具：
 
-class Model {
-  constructor(name: string, provider: ModelProvider, options?: Record<string, unknown>)
-  invoke(context: ModelContext): Promise<AssistantMessage>
-  stream(context: ModelContext): AsyncGenerator<AssistantMessage>
-}
-```
+| 工具 | 用途 | 默认需审批 |
+| --- | --- | --- |
+| `bash` | 执行 shell 命令 | 是 |
+| `write_file` | 写文件 | 是 |
+| `str_replace` | 字符串替换 | 是 |
+| `apply_patch` | 应用 patch | 是 |
+| `read_file` | 读文件 | 否 |
+| `list_files` | 列目录 | 否 |
+| `glob_search` | 文件 glob 搜索 | 否 |
+| `grep_search` | 内容搜索 | 否 |
+| `file_info` | 文件元信息 | 否 |
+| `mkdir` | 创建目录 | 否 |
+| `move_path` | 移动路径 | 否 |
+| `ask_user_question` | 向用户提问 | 否 |
 
-#### 工具定义
+### Community
 
-```typescript
-interface FunctionTool<P extends ZodSchema, R> {
-  name: string
-  description: string
-  parameters: P             // Zod Schema
-  invoke: (input: z.infer<P>, signal?: AbortSignal) => Promise<R>
-}
+| Provider | 文件 | 说明 |
+| --- | --- | --- |
+| OpenAI | `src/community/openai` | Chat Completions + function tools |
+| Anthropic | `src/community/anthropic` | Messages API + tool_use/tool_result |
 
-function defineTool<P, R>({ name, description, parameters, invoke }): FunctionTool<P, R>
-```
+### CLI / TUI
 
----
-
-### Layer 2: Agent Loop（代理循环层）
-
-#### Agent 核心类
-
-```typescript
-class Agent {
-  constructor(options: {
-    model: Model
-    prompt: string
-    tools?: Tool[]
-    middlewares?: AgentMiddleware[]
-    maxSteps?: number
-  })
-
-  async *stream(message: UserMessage): AsyncGenerator<AgentEvent>
-  abort(): void
-}
-```
-
-**执行流程：**
-
-```
-用户消息 → beforeAgentRun()
-         ↓
-    ┌─── 循环 (step 1..maxSteps) ────┐
-    │  beforeAgentStep()              │
-    │  _think() → 调用模型，流式输出   │
-    │  afterModel()                   │
-    │  有 tool_use？                   │
-    │   ├─ 否 → afterAgentRun() → 结束│
-    │   └─ 是 → _act() 并行执行工具   │
-    │  afterAgentStep()               │
-    └─────── 继续下一步 ──────────────┘
-```
-
-#### 事件类型
-
-```typescript
-type AgentEvent =
-  | { type: "message"; message: AssistantMessage | ToolMessage }
-  | { type: "progress"; subtype: "thinking" | "tool" }
-```
-
----
-
-### Layer 3: Coding Agent（编码代理层）
-
-```typescript
-async function createCodingAgent(options: {
-  model: Model
-  cwd?: string
-  skillsDirs?: string[]
-  askUser?: (toolUse) => Promise<ApprovalDecision>
-}): Promise<Agent>
-```
-
-#### 内置工具
-
-| 工具名 | 功能 | 需审批 |
-|--------|------|--------|
-| `bash` | 执行 Shell 命令 | ✅ |
-| `read_file` | 读取文件（支持行范围） | ❌ |
-| `write_file` | 创建/覆盖文件 | ✅ |
-| `str_replace` | 精确字符串替换 | ✅ |
-| `apply_patch` | 应用 unified diff 补丁 | ✅ |
-| `list_files` | 列出目录内容 | ❌ |
-| `glob_search` | Glob 模式文件搜索 | ❌ |
-| `grep_search` | 正则内容搜索（ripgrep） | ❌ |
-| `file_info` | 获取文件元数据 | ❌ |
-| `mkdir` | 创建目录 | ❌ |
-| `move_path` | 移动/重命名 | ❌ |
-
----
-
-### Layer 4: Community Providers
-
-#### OpenAI
-
-```typescript
-class OpenAIModelProvider implements ModelProvider {
-  constructor({ baseURL?: string, apiKey?: string })
-}
-```
-
-#### Anthropic
-
-```typescript
-class AnthropicModelProvider implements ModelProvider {
-  constructor({ baseURL?: string, apiKey?: string })
-}
-```
-
-- System prompt 独立提取传递
-- Thinking 模式自动设置 `budget_tokens`
-
----
-
-### Layer 5: CLI / TUI
-
-配置文件：`~/.helixent/config.yaml`
-
-```bash
-helixent                        # 启动交互式 TUI
-helixent config model add       # 添加模型
-helixent config model list      # 列出模型
-helixent config model remove    # 删除模型
-helixent config model set-default  # 设置默认
-```
+| 模块 | 作用 |
+| --- | --- |
+| `src/cli/index.tsx` | 选择模型 provider，创建 agent/session，渲染 TUI |
+| `tui/app.tsx` | 顶层 Ink 布局 |
+| `tui/hooks/use-agent-loop.ts` | Session + AgentRunner 的 UI 驱动 |
+| `tui/components/` | 输入框、历史消息、审批、todo 面板 |
+| `settings/` | allow list 等本地设置 |
+| `config/` | 模型配置 schema |
 
 ---
 
 ## 中间件系统
 
-8 个生命周期钩子，按数组顺序顺序执行：
+```text
+beforeAgentRun
+  └─ beforeAgentStep
+      └─ beforeModel
+          └─ model.stream
+      └─ afterModel
+      └─ beforeToolUse / afterToolUse
+  └─ afterAgentStep
+afterAgentRun
+```
 
-| 钩子 | 触发时机 | 能力 |
-|------|---------|------|
-| `beforeAgentRun` | 首步前 | 注入上下文 |
-| `afterAgentRun` | 代理停止时 | 清理、总结 |
-| `beforeAgentStep` | 每步开始 | 修改上下文 |
-| `afterAgentStep` | 每步结束 | 记录、提醒 |
-| `beforeModel` | 模型调用前 | 修改 prompt |
-| `afterModel` | 模型响应后 | 后处理 |
-| `beforeToolUse` | 工具执行前 | 审批、跳过 |
-| `afterToolUse` | 工具完成后 | 记录结果 |
+| Hook | 典型用途 |
+| --- | --- |
+| `beforeAgentRun` | 加载 skills、初始化 runtime context |
+| `beforeAgentStep` | step 级提示或统计 |
+| `beforeModel` | 注入技能、todo reminder、provider shaping |
+| `afterModel` | 修改 assistant message |
+| `beforeToolUse` | 权限审批、跳过工具 |
+| `afterToolUse` | 记录工具结果、更新状态 |
+| `afterAgentStep` | step 后处理 |
+| `afterAgentRun` | 正常结束清理 |
 
 ---
 
-## 工具系统
+## Skills
 
-### 自定义工具示例
+技能目录中每个子目录放一个 `SKILL.md`：
 
-```typescript
-import { defineTool } from "helixent/foundation"
-import { z } from "zod"
-
-const myTool = defineTool({
-  name: "my_tool",
-  description: "A custom tool",
-  parameters: z.object({ input: z.string() }),
-  invoke: async ({ input }) => {
-    return { ok: true, summary: `Done: ${input}`, data: { result: input } }
-  },
-})
+```text
+skills/
+├─ coding-plan/
+│  └─ SKILL.md
+└─ deep-research-plan/
+   └─ SKILL.md
 ```
 
-### 工具结果策略
-
-每个工具有独立的结果格式化策略，控制返回给模型的信息量：
-
-```typescript
-read_file:  { preferSummaryOnly: false, includeData: true, maxStringLength: 12000 }
-list_files: { preferSummaryOnly: true,  includeData: false, maxStringLength: 1000 }
-```
-
----
-
-## 技能系统
-
-### 发现路径
-
-1. `~/.agents/skills/`
-2. `~/.helixent/skills/`
-3. `.agents/skills/`（项目级）
-4. `.helixent/skills/`（项目级）
-
-### 技能格式
+格式：
 
 ```markdown
 ---
-name: my-skill
-description: Description
+name: coding-plan
+description: Plan coding work before implementation.
 ---
-# Skill instructions...
+
+# Skill content
 ```
 
----
+CLI 会把这些目录加入 `skillsDirs`：
 
-## 权限与审批系统
-
-需审批工具：`bash`、`write_file`、`str_replace`、`apply_patch`
-
-通过 `beforeToolUse` 中间件钩子拦截，未批准时返回 `{ __skip: true, result }`。
-
----
-
-## API 参考
-
-```typescript
-// Foundation
-import { Model, ModelProvider } from "helixent/foundation"
-import { Message, AssistantMessage } from "helixent/foundation"
-import { FunctionTool, defineTool } from "helixent/foundation"
-
-// Agent
-import { Agent, AgentEvent, AgentMiddleware } from "helixent/agent"
-
-// Coding
-import { createCodingAgent } from "helixent/coding"
-
-// Providers
-import { OpenAIModelProvider } from "helixent/community/openai"
-import { AnthropicModelProvider } from "helixent/community/anthropic"
-```
+- `<cwd>/skills`
+- `<cwd>/.agents/skills`
+- `$HELIXENT_HOME/skills`
+- `~/.agents/skills`
+- `~/.helixent/skills`
 
 ---
 
-## 快速上手
+## 配置与命令
 
-### 安装
+交互入口：
 
 ```bash
-npm install -g helixent
+bun run dev
 ```
 
-### 作为库使用
-
-```typescript
-import { createCodingAgent } from "helixent/coding"
-import { OpenAIModelProvider } from "helixent/community/openai"
-import { Model } from "helixent/foundation"
-
-const provider = new OpenAIModelProvider({
-  baseURL: "https://api.openai.com/v1",
-  apiKey: process.env.OPENAI_API_KEY,
-})
-
-const model = new Model("gpt-4o", provider, { max_tokens: 16384 })
-const agent = await createCodingAgent({ model })
-
-for await (const event of agent.stream({
-  role: "user",
-  content: [{ type: "text", text: "Create a hello world server" }],
-})) {
-  if (event.type === "message") {
-    for (const c of event.message.content) {
-      if (c.type === "text") console.info(c.text)
-      if (c.type === "tool_use") console.info("🔧", c.name)
-    }
-  }
-}
-```
-
----
-
-## 构建与测试
+模型管理：
 
 ```bash
-bun run dev          # 开发模式
-bun run check        # 完整质量检查（tsc + eslint + test）
-bun run build:bin    # 构建原生可执行文件
-bun run build:js     # 构建 JS（支持 tree-shaking）
-bun test             # 运行测试
+helixent config model add
+helixent config model list
+helixent config model remove
+helixent config model set-default
+```
+
+常用工程命令：
+
+```bash
+bun install
+bun run check        # tsc + eslint + bun test
+bun run check:types  # 仅类型检查
+bun run lint
+bun run build:js
+bun run build:bin
+bun test
 ```
 
 ---
 
-## 依赖说明
+## 测试布局
 
-### 生产依赖
+```text
+src/agent/__tests__/
+src/foundation/__tests__/
+src/cli/**/__tests__/
+src/coding/**/__tests__/
+src/community/**/__tests__/
+```
 
-| 包名 | 用途 |
-|------|------|
-| `@anthropic-ai/sdk` | Anthropic API |
-| `openai` | OpenAI API |
-| `commander` | CLI 解析 |
-| `ink` + `react` | 终端 UI |
-| `zod` | Schema 验证 |
-| `yaml` | YAML 解析 |
-| `gray-matter` | Frontmatter 提取 |
+重点测试行为：
 
----
-
-## 设计模式与亮点
-
-1. **辨别联合类型** — 全框架 `role`/`type` 辨别符，类型安全窄化
-2. **中间件组合优于继承** — Agent 通过可插拔中间件扩展，无继承层次
-3. **流式快照模式** — 每次 yield 是完整消息，非差量补丁
-4. **并行工具调度** — Promise.race 模式，结果按完成顺序发出
-5. **Abort 信号全链路传递** — 单次 abort() 取消整个执行链
-6. **Zod Schema 一体化** — 类型推断 + 运行时验证 + JSON Schema 生成
-7. **工具结果策略** — 按工具名定制返回信息量，控制 token 消耗
-8. **Todo 软提醒** — 超 10 步未使用时温和提醒
+- Session/Turn 状态机
+- interrupt/continue 与 synthetic `tool_result`
+- runner 事件与 `done`
+- 同一 assistant step 内工具并行执行
+- provider message/tool 转换
+- 编码工具的成功路径和结构化错误
 
 ---
 
-*文档生成日期：2026-05-06*
+## 当前边界
+
+已落地：
+
+- Session / Turn 一等模型
+- Agent 配置对象化
+- AgentRunner / TurnRun
+- TUI 迁移到 Session + Runner
+- `AGENTS.md` 进入 `Session.contextBlocks`
+- requested skill 进入 turn options
+- 并行工具执行保留
+
+暂不做：
+
+- compaction
+- resume
+- JSONL transcript persistence
+- 一个 session 内多个 active turn
+- first-class `Step`
+- `Session.contextBlocks` 持久化
