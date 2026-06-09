@@ -7,7 +7,7 @@ import { validateIntegrity } from "@/cli/bootstrap";
 import { registerCommands } from "@/cli/commands";
 import { loadConfig } from "@/cli/config";
 import { SettingsLoader, SettingsWriter } from "@/cli/settings";
-import { createCodingAgent, globalApprovalManager, globalAskUserQuestionManager } from "@/coding";
+import { createCodingAgent, createCodingSession, globalApprovalManager, globalAskUserQuestionManager } from "@/coding";
 import { AnthropicModelProvider } from "@/community/anthropic";
 import { OpenAIModelProvider } from "@/community/openai";
 import type { ModelProvider } from "@/foundation";
@@ -81,10 +81,11 @@ if (args.length > 0) {
       persistAllowedTool: (cwd, toolName) => settingsWriter.appendAllowedTool(cwd, toolName),
     },
   });
+  const session = await createCodingSession({ cwd: process.cwd() });
   const commands: SlashCommand[] = await loadAvailableCommands(skillsDirs);
 
   render(
-    <AgentLoopProvider agent={agent} commands={commands}>
+    <AgentLoopProvider agent={agent} session={session} commands={commands}>
       <App commands={commands} supportProjectWideAllow />
     </AgentLoopProvider>,
     { patchConsole: false },

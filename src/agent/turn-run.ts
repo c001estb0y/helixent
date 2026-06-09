@@ -1,0 +1,331 @@
+import type {
+  AssistantMessage,
+  ModelContext,
+  NonSystemMessage,
+  ToolMessage,
+  ToolUseContent,
+} from "@/foundation";
+
+import type { Agent, AgentContext } from "./agent";
+import type { TurnRunEvent } from "./agent-event";
+import type { Session, TurnId } from "./session";
+import { formatToolResultForMessage } from "./tool-result-runtime";
+
+export interface TurnRunOptions {
+  session: Session;
+  agent: Agent;
+  turnId: TurnId;
+}
+
+/**
+ * Runtime handle for one execution attempt of a session turn.
+ */
+export class TurnRun {
+  readonly events: AsyncIterable<TurnRunEvent>;
+  readonly done: Promise<void>;
+
+  private readonly _session: Session;
+  private readonly _agent: Agent;
+  private readonly _turnId: TurnId;
+  private readonly _abortController = new AbortController();
+  private readonly _events = new AsyncEventQueue<TurnRunEvent>();
+  private _agentContext: AgentContext | null = null;
+
+  constructor({ session, agent, turnId }: TurnRunOptions) {
+    this._session = session;
+    this._agent = agent;
+    this._turnId = turnId;
+    this.events = this._events;
+    this.done = this._run();
+  }
+
+  /** Interrupts this run. The turn can be continued later. */
+  interrupt() {
+    this._abortController.abort(new Error("Turn interrupted"));
+  }
+
+  private async _run() {
+    try {
+      const turn = this._session.getTurn(this._turnId);
+      if (!turn) {
+        throw new Error(`Turn ${this._turnId} not found`);
+      }
+      this._session.markTurnRunning(this._turnId);
+      this._events.push({ type: "turn_started", turnId: this._turnId });
+
+      this._agentContext = {
+        prompt: this._agent.prompt,
+        messages: this._session.messages,
+        tools: this._agent.tools,
+        requestedSkillName: turn.options?.requestedSkillName,
+      };
+      await this._beforeAgentRun();
+
+      for (let step = 1; step <= this._agent.options.maxSteps; step++) {
+        this._abortController.signal.throwIfAborted();
+        await this._beforeAgentStep(step);
+        const assistantMessage = await this._think();
+        await this._afterModel(assistantMessage);
+        const messageId = this._appendMessage(assistantMessage);
+        this._events.push({ type: "message", turnId: this._turnId, messageId });
+
+        const toolUses = this._extractToolUses(assistantMessage);
+        if (toolUses.length === 0) {
+          await this._afterAgentRun();
+          this._session.completeTurn(this._turnId);
+          this._events.push({ type: "turn_completed", turnId: this._turnId });
+          return;
+        }
+
+        await this._act(toolUses);
+        await this._afterAgentStep(step);
+      }
+      throw new Error("Maximum number of steps reached");
+    } catch (error) {
+      if (this._abortController.signal.aborted) {
+        this._session.interruptTurn(this._turnId);
+        this._events.push({ type: "turn_interrupted", turnId: this._turnId });
+        return;
+      }
+
+      const message = error instanceof Error ? error.message : String(error);
+      this._session.failTurn(this._turnId, message);
+      this._events.push({ type: "turn_failed", turnId: this._turnId, error: message });
+      throw error;
+    } finally {
+      this._events.close();
+    }
+  }
+
+  private async _think(): Promise<AssistantMessage> {
+    const modelContext: ModelContext = {
+      prompt: this._context.prompt,
+      contextBlocks: this._session.contextBlocks,
+      messages: this._session.messages,
+      tools: this._context.tools,
+      signal: this._abortController.signal,
+    };
+    await this._beforeModel(modelContext);
+
+    let latest: AssistantMessage | null = null;
+    for await (const snapshot of this._agent.model.stream(modelContext)) {
+      latest = snapshot;
+      if (snapshot.streaming) {
+        this._events.push(this._deriveProgress(snapshot));
+      }
+    }
+    if (!latest) {
+      throw new Error("Model stream ended without producing a message");
+    }
+    if (latest.streaming) {
+      delete latest.streaming;
+    }
+    return latest;
+  }
+
+  private _deriveProgress(snapshot: AssistantMessage): TurnRunEvent {
+    const toolUses = snapshot.content.filter(
+      (content): content is ToolUseContent => content.type === "tool_use",
+    );
+    if (toolUses.length === 0) {
+      return { type: "progress", turnId: this._turnId, subtype: "thinking" };
+    }
+    const last = toolUses[toolUses.length - 1]!;
+    return { type: "progress", turnId: this._turnId, subtype: "tool", name: last.name, input: last.input };
+  }
+
+  private _extractToolUses(message: AssistantMessage): ToolUseContent[] {
+    return message.content.filter((content): content is ToolUseContent => content.type === "tool_use");
+  }
+
+  private async _act(toolUses: ToolUseContent[]) {
+    const signal = this._abortController.signal;
+    const pending = toolUses.map(async (toolUse, index) => {
+      this._events.push({ type: "tool_started", turnId: this._turnId, toolUseId: toolUse.id, name: toolUse.name });
+      try {
+        const tool = this._context.tools?.find((candidate) => candidate.name === toolUse.name);
+        if (!tool) throw new Error(`Tool ${toolUse.name} not found`);
+        const beforeResult = await this._beforeToolUse(toolUse);
+        if (beforeResult.skip) {
+          return { index, toolUseId: toolUse.id, toolName: toolUse.name, result: beforeResult.result };
+        }
+        const result = await tool.invoke(toolUse.input, signal);
+        await this._afterToolUse(toolUse, result);
+        return { index, toolUseId: toolUse.id, toolName: toolUse.name, result };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { index, toolUseId: toolUse.id, toolName: toolUse.name, result: `Error: ${message}` };
+      }
+    });
+
+    const abortPromise = new Promise<never>((_, reject) => {
+      if (signal.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+
+    const remaining = new Set(pending.map((_, i) => i));
+    while (remaining.size > 0) {
+      const candidates = [...remaining].map((i) => pending[i]);
+      const resolved = (await Promise.race([...candidates, abortPromise]))!;
+      remaining.delete(resolved.index);
+
+      const toolMessage: ToolMessage = {
+        role: "tool",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: resolved.toolUseId,
+            content: formatToolResultForMessage({ toolName: resolved.toolName, result: resolved.result }),
+          },
+        ],
+      };
+      const messageId = this._appendMessage(toolMessage);
+      this._events.push({ type: "message", turnId: this._turnId, messageId });
+      this._events.push({
+        type: "tool_finished",
+        turnId: this._turnId,
+        toolUseId: resolved.toolUseId,
+        messageId,
+      });
+    }
+  }
+
+  private _appendMessage(message: NonSystemMessage) {
+    return this._session.appendMessageToTurn(this._turnId, message);
+  }
+
+  private get _context() {
+    if (!this._agentContext) {
+      throw new Error("Agent context is not initialized");
+    }
+    return this._agentContext;
+  }
+
+  private async _beforeModel(modelContext: ModelContext) {
+    for (const middleware of this._agent.middlewares) {
+      if (!middleware.beforeModel) continue;
+      const result = await middleware.beforeModel({ modelContext, agentContext: this._context });
+      if (result) {
+        Object.assign(modelContext, result);
+      }
+    }
+  }
+
+  private async _afterModel(message: AssistantMessage) {
+    for (const middleware of this._agent.middlewares) {
+      if (!middleware.afterModel) continue;
+      const result = await middleware.afterModel({ agentContext: this._context, message });
+      if (result) {
+        Object.assign(message, result);
+      }
+    }
+  }
+
+  private async _beforeAgentRun() {
+    for (const middleware of this._agent.middlewares) {
+      if (!middleware.beforeAgentRun) continue;
+      const result = await middleware.beforeAgentRun({ agentContext: this._context });
+      if (result) {
+        Object.assign(this._context, result);
+      }
+    }
+  }
+
+  private async _afterAgentRun() {
+    for (const middleware of this._agent.middlewares) {
+      if (!middleware.afterAgentRun) continue;
+      const result = await middleware.afterAgentRun({ agentContext: this._context });
+      if (result) {
+        Object.assign(this._context, result);
+      }
+    }
+  }
+
+  private async _beforeAgentStep(step: number) {
+    for (const middleware of this._agent.middlewares) {
+      if (!middleware.beforeAgentStep) continue;
+      const result = await middleware.beforeAgentStep({ agentContext: this._context, step });
+      if (result) {
+        Object.assign(this._context, result);
+      }
+    }
+  }
+
+  private async _afterAgentStep(step: number) {
+    for (const middleware of this._agent.middlewares) {
+      if (!middleware.afterAgentStep) continue;
+      const result = await middleware.afterAgentStep({ agentContext: this._context, step });
+      if (result) {
+        Object.assign(this._context, result);
+      }
+    }
+  }
+
+  private async _beforeToolUse(toolUse: ToolUseContent): Promise<{ skip: boolean; result?: unknown }> {
+    for (const middleware of this._agent.middlewares) {
+      if (!middleware.beforeToolUse) continue;
+      const result = await middleware.beforeToolUse({ agentContext: this._context, toolUse });
+      if (result && typeof result === "object" && "__skip" in result) {
+        return { skip: true, result: result.result };
+      }
+      if (result) {
+        Object.assign(this._context, result);
+      }
+    }
+    return { skip: false };
+  }
+
+  private async _afterToolUse(toolUse: ToolUseContent, toolResult: unknown) {
+    for (const middleware of this._agent.middlewares) {
+      if (!middleware.afterToolUse) continue;
+      const result = await middleware.afterToolUse({ agentContext: this._context, toolUse, toolResult });
+      if (result) {
+        Object.assign(this._context, result);
+      }
+    }
+  }
+}
+
+class AsyncEventQueue<T> implements AsyncIterable<T> {
+  private readonly _items: T[] = [];
+  private readonly _waiters: PromiseWithResolvers<IteratorResult<T>>["resolve"][] = [];
+  private _closed = false;
+
+  push(item: T) {
+    const waiter = this._waiters.shift();
+    if (waiter) {
+      waiter({ value: item, done: false });
+      return;
+    }
+    this._items.push(item);
+  }
+
+  close() {
+    this._closed = true;
+    while (this._waiters.length > 0) {
+      this._waiters.shift()!({ value: undefined, done: true });
+    }
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<T> {
+    while (true) {
+      const next = await this._next();
+      if (next.done) return;
+      yield next.value;
+    }
+  }
+
+  private _next(): Promise<IteratorResult<T>> {
+    const item = this._items.shift();
+    if (item) {
+      return Promise.resolve({ value: item, done: false });
+    }
+    if (this._closed) {
+      return Promise.resolve({ value: undefined, done: true });
+    }
+    return new Promise((resolve) => this._waiters.push(resolve));
+  }
+}

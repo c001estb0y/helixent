@@ -52,6 +52,10 @@ export class Model {
     if (context.prompt) {
       messages.push({ role: "system", content: [{ type: "text", text: context.prompt }] });
     }
+    for (const block of context.contextBlocks ?? []) {
+      const label = block.source ? `Context from ${block.source}` : "Context";
+      messages.push({ role: "user", content: [{ type: "text", text: `${label}:\n\n${block.content}` }] });
+    }
     messages.push(...context.messages);
     return {
       model: this.name,
