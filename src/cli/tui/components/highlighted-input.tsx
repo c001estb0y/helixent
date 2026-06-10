@@ -1,6 +1,25 @@
-import { Text } from "ink";
+import { Box, Text, type CursorPosition, type DOMElement, useCursor } from "ink";
+import { useLayoutEffect, useRef, useState } from "react";
+import stringWidth from "string-width";
 
 import { currentTheme } from "../themes";
+
+function getAbsolutePosition(node: DOMElement): CursorPosition | undefined {
+  let currentNode: DOMElement | undefined = node;
+  let x = 0;
+  let y = 0;
+
+  while (currentNode?.parentNode) {
+    const { yogaNode } = currentNode;
+    if (!yogaNode) return undefined;
+
+    x += yogaNode.getComputedLeft();
+    y += yogaNode.getComputedTop();
+    currentNode = currentNode.parentNode;
+  }
+
+  return { x, y };
+}
 
 export function HighlightedInput({
   value,
@@ -13,35 +32,51 @@ export function HighlightedInput({
   placeholder: string;
   highlightedCommandName?: string | null;
 }) {
+  const inputRef = useRef<DOMElement>(null);
+  const [absolutePosition, setAbsolutePosition] = useState<CursorPosition | undefined>();
+  const { setCursorPosition } = useCursor();
+
+  useLayoutEffect(() => {
+    const nextPosition = inputRef.current ? getAbsolutePosition(inputRef.current) : undefined;
+
+    setAbsolutePosition((currentPosition) => {
+      if (currentPosition?.x === nextPosition?.x && currentPosition?.y === nextPosition?.y) {
+        return currentPosition;
+      }
+
+      return nextPosition;
+    });
+  });
+
+  setCursorPosition(
+    absolutePosition
+      ? {
+          x: absolutePosition.x + stringWidth(value.slice(0, cursorOffset)),
+          y: absolutePosition.y,
+        }
+      : undefined,
+  );
+
   if (value.length === 0) {
     return (
-      <Text>
-        <Text inverse dimColor>
-          {placeholder[0] ?? " "}
-        </Text>
-        <Text dimColor>{placeholder.slice(1)}</Text>
-      </Text>
+      <Box ref={inputRef}>
+        <Text dimColor>{placeholder}</Text>
+      </Box>
     );
   }
 
   const highlightLength = highlightedCommandName ? highlightedCommandName.length + 1 : 0;
+  const highlightedValue = value.slice(0, highlightLength);
+  const restValue = value.slice(highlightLength);
 
   return (
-    <Text>
-      {value.split("").map((char, index) => {
-        const highlighted = index < highlightLength;
-        return (
-          <Text
-            key={`${char}-${index}`}
-            bold={highlighted}
-            color={highlighted ? currentTheme.colors.primary : undefined}
-            inverse={index === cursorOffset}
-          >
-            {char}
-          </Text>
-        );
-      })}
-      {cursorOffset === value.length ? <Text inverse>{" "}</Text> : null}
-    </Text>
+    <Box ref={inputRef}>
+      {highlightedValue ? (
+        <Text bold color={currentTheme.colors.primary}>
+          {highlightedValue}
+        </Text>
+      ) : null}
+      {restValue ? <Text>{restValue}</Text> : null}
+    </Box>
   );
 }
