@@ -111,6 +111,20 @@ Helixent 采用分层架构，依赖方向严格自上而下：
 └─────────────────────────────────────────────────┘
 ```
 
+### 为什么 `AgentRunner` 无状态
+
+`AgentRunner` 无状态的核心价值是：执行控制和持久会话状态不会混在一个对象里。
+
+| 好处 | 说明 |
+| --- | --- |
+| Agent 配置可复用 | `Agent` 只描述能力：模型、prompt、工具、middleware。不同 session 和 turn 可以复用同一个配置，不会共享 transcript、abort controller 或 streaming 状态。 |
+| Session 是唯一事实来源 | turn、messages、context blocks 都在 `Session`。runner 只是启动执行，不保存另一份隐藏状态。 |
+| 中断和继续更清楚 | `TurnRun` 拥有本次运行的 abort controller。中断的是一次 run，不是整个 agent；turn 进入 `interrupted` 后可以用新的 `TurnRun` 继续。 |
+| 更容易支持并行或子任务 | 不同 session/turn 可以创建不同 `TurnRun`，不会被共享 agent 实例状态污染。 |
+| 测试更简单 | 输入 `session + agent + turnId`，观察 `Session` 变化和 events，不需要先把 `Agent` 调到某种内部状态。 |
+
+一句话：`Agent` 像配置，`Session` 像数据库，`TurnRun` 像进程句柄；`AgentRunner` 只是把它们接起来的无状态启动器。
+
 状态机：
 
 ```text
@@ -132,6 +146,112 @@ created ──▶ running ──▶ completed
 - middleware 可以改 runtime/model context，但不能直接写 transcript。
 - interrupted turn 可以继续；terminal turn 不可继续。
 - 如果中断留下未配对 `tool_use`，继续前会补 synthetic `tool_result`。
+
+---
+
+## Prompt / Context / Transcript 分层
+
+源码里最终发给 provider 的 messages 不是直接等于 `Session.messages`。它会先经过 `TurnRun` 组装 `ModelContext`，再由 `Model` 拼成 provider request。
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Agent                                                        │
+│                                                              │
+│  Agent.prompt                                                │
+│  - 身份                                                       │
+│  - 工具规则                                                   │
+│  - 行为契约                                                   │
+└───────────────────────────────┬──────────────────────────────┘
+                                │
+                                ▼
+                    ┌──────────────────────┐
+                    │ TurnRun._think()     │
+                    │ 创建 ModelContext    │
+                    └──────────┬───────────┘
+                               │
+                               │ beforeModel middleware
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Runtime ModelContext                                         │
+│                                                              │
+│  prompt = Agent.prompt + middleware prompt patches           │
+│  contextBlocks = Session.contextBlocks                       │
+│  messages = Session.messages                                 │
+│  tools = Agent.tools                                         │
+│  signal = TurnRun AbortSignal                                │
+└───────────────────────────────┬──────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Model._buildModelProviderParams()                            │
+│                                                              │
+│  1. prompt                                                   │
+│     -> system message                                        │
+│                                                              │
+│  2. contextBlocks                                            │
+│     -> contextual user messages                              │
+│                                                              │
+│  3. messages                                                 │
+│     -> transcript messages                                   │
+└───────────────────────────────┬──────────────────────────────┘
+                                │
+                                ▼
+┌──────────────────────────────────────────────────────────────┐
+│ Provider Messages                                            │
+│                                                              │
+│  [0] system: Agent.prompt + runtime patches                  │
+│                                                              │
+│  [1..n] user: Context from AGENTS.md / other context blocks   │
+│                                                              │
+│  [n..] transcript:                                           │
+│       user input                                             │
+│       assistant output                                       │
+│       tool_result                                            │
+│       steer input                                            │
+│       ...                                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+`Session` 内部的结构可以这样理解：
+
+```text
+┌──────────────────────────────────────────────────────────────┐
+│ Session                                                      │
+│                                                              │
+│  contextBlocks                                               │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ AGENTS.md / 项目规则 / 用户偏好                         │  │
+│  │ 模型可见，但不是普通对话消息                             │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  _messages: SessionMessage[]                                 │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ message-1: user      初始输入                           │  │
+│  │ message-2: assistant 模型回复                           │  │
+│  │ message-3: tool      工具结果                           │  │
+│  │ message-4: user      steer 输入                         │  │
+│  └────────────────────────────────────────────────────────┘  │
+│                                                              │
+│  turns                                                       │
+│  ┌────────────────────────────────────────────────────────┐  │
+│  │ turn-1                                                 │  │
+│  │ - inputMessageIds: [message-1, message-4]              │  │
+│  │ - messageStartIndex: 0                                 │  │
+│  │ - messageEndIndex: 4                                   │  │
+│  │ - status: completed / interrupted / failed ...         │  │
+│  └────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────┘
+```
+
+速记：
+
+| 层 | 含义 |
+| --- | --- |
+| `Agent.prompt` | 这个 agent 是谁、怎么工作 |
+| middleware patch | 本次请求临时加料，不写入 session |
+| `Session.contextBlocks` | 会话级背景资料，模型可见但不是 transcript |
+| `Session.messages` | 真实发生过的对话和工具结果 |
+| `Model` | 把以上内容按顺序拼成 provider messages |
 
 ---
 
