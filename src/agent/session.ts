@@ -83,6 +83,7 @@ export interface InstallCompactedTranscriptParams {
   preservedTailEntries: SessionMessage[];
   tokenEstimate: unknown;
   modelContextWindow: unknown;
+  compactionSourceMaterial?: string;
   reason: "auto-pre-request" | string;
   turnId?: TurnId;
 }
@@ -326,6 +327,7 @@ export class Session {
     preservedTailEntries,
     tokenEstimate,
     modelContextWindow,
+    compactionSourceMaterial,
     reason,
     turnId,
   }: InstallCompactedTranscriptParams): SessionMessage {
@@ -344,6 +346,7 @@ export class Session {
 
     const preservedTailMessageIds = preservedTail.map((entry) => entry.id);
     const replacementMessageIds = [summaryEntry.id, ...preservedTailMessageIds];
+    const replacementTranscript = [summaryEntry, ...preservedTail].map((entry) => this._cloneMessage(entry));
     this._recordEvent({
       type: "transcript_compacted",
       criticality: "session",
@@ -354,8 +357,10 @@ export class Session {
         compactedMessageIds,
         preservedTailMessageIds,
         replacementMessageIds,
+        replacementTranscript,
         tokenEstimate,
         modelContextWindow,
+        compactionSourceMaterial,
         reason,
       },
     });
