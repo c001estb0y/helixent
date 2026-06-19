@@ -36,6 +36,8 @@ export interface AssistantMessage {
   content: AssistantMessageContent;
   /** Provider-reported token usage for the request that produced this message, when available. */
   usage?: TokenUsage;
+  /** Provider-reported finish reason, when available. */
+  finishReason?: string | null;
   /** Present and `true` while the message is still being streamed; absent once complete. */
   streaming?: boolean;
 }

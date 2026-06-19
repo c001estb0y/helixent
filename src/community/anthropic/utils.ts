@@ -114,6 +114,7 @@ export function parseAssistantMessage(
     role: "assistant",
     content: [],
     usage,
+    finishReason: response.stop_reason,
   };
 
   for (const block of response.content) {

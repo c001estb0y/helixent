@@ -28,6 +28,7 @@ export class StreamAccumulator {
   private inputTokens = 0;
   private outputTokens = 0;
   private hasFinalUsage = false;
+  private finishReason: string | null | undefined;
 
   push(event: Anthropic.RawMessageStreamEvent): void {
     switch (event.type) {
@@ -63,6 +64,7 @@ export class StreamAccumulator {
       role: "assistant",
       content,
       usage: this.hasFinalUsage ? this._buildUsage() : undefined,
+      finishReason: this.finishReason,
       ...(this.hasFinalUsage ? {} : { streaming: true }),
     };
   }
@@ -103,6 +105,7 @@ export class StreamAccumulator {
   }
 
   private _handleMessageDelta(event: Anthropic.RawMessageDeltaEvent): void {
+    this.finishReason = event.delta.stop_reason;
     // Final usage — output tokens are cumulative on this event.
     if (event.usage.output_tokens != null) {
       this.outputTokens = event.usage.output_tokens;

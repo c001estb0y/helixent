@@ -20,9 +20,14 @@ export class StreamAccumulator {
   private textContent = "";
   private toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
   private usage: TokenUsage | undefined;
+  private finishReason: string | null | undefined;
 
   push(chunk: OpenAIChatCompletionChunk): void {
     const delta = chunk.choices[0]?.delta;
+    const finishReason = chunk.choices[0]?.finish_reason;
+    if (finishReason !== undefined) {
+      this.finishReason = finishReason;
+    }
 
     if (delta) {
       // Reasoning / thinking content
@@ -92,6 +97,7 @@ export class StreamAccumulator {
       role: "assistant",
       content,
       usage: this.usage,
+      finishReason: this.finishReason,
       ...(this.usage ? {} : { streaming: true }),
     };
   }

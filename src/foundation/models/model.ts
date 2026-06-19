@@ -1,7 +1,5 @@
-import type { Message } from "../messages";
-
-import type { ModelContext } from "./model-context";
-import type { ModelProvider, ModelProviderInvokeParams } from "./model-provider";
+import type { RenderedModelRequest } from "./model-context";
+import type { ModelProvider } from "./model-provider";
 
 /**
  * Represents a model that can be used to generate text.
@@ -27,42 +25,20 @@ export class Model {
   ) {}
 
   /**
-   * Invokes the model with the given messages.
-   * @param messages - The messages to send to the model.
-   * @param tools - The tools to use to invoke the model.
+   * Invokes the model with an already rendered provider-neutral request.
+   * @param request - The rendered request to send to the provider.
    * @returns The response from the model.
    */
-  invoke(context: ModelContext) {
-    const params = this._buildModelProviderParams(context);
-    return this.provider.invoke(params);
+  invokeRendered(request: RenderedModelRequest) {
+    return this.provider.invoke(request);
   }
 
   /**
-   * Streams the model response, yielding accumulated snapshots.
-   * @param context - The context to send to the model.
+   * Streams the model response for an already rendered provider-neutral request.
+   * @param request - The rendered request to send to the provider.
    * @returns The stream of responses from the model.
    */
-  stream(context: ModelContext) {
-    const params = this._buildModelProviderParams(context);
-    return this.provider.stream(params);
-  }
-
-  private _buildModelProviderParams(context: ModelContext): ModelProviderInvokeParams {
-    const messages: Message[] = [];
-    if (context.prompt) {
-      messages.push({ role: "system", content: [{ type: "text", text: context.prompt }] });
-    }
-    for (const block of context.contextBlocks ?? []) {
-      const label = block.source ? `Context from ${block.source}` : "Context";
-      messages.push({ role: "user", content: [{ type: "text", text: `${label}:\n\n${block.content}` }] });
-    }
-    messages.push(...context.messages);
-    return {
-      model: this.name,
-      options: this.options,
-      messages,
-      tools: context.tools,
-      signal: context.signal,
-    };
+  streamRendered(request: RenderedModelRequest) {
+    return this.provider.stream(request);
   }
 }

@@ -11,7 +11,9 @@ import {
 
 import { Agent } from "../agent";
 import { AgentRunner } from "../agent-runner";
+import { defineEffectivePromptContext, definePromptContextItem } from "../prompt-context";
 import { Session } from "../session";
+import { MemorySessionEventLog } from "../session-event-log";
 
 describe("AgentRunner", () => {
   test("runs a session turn and records assistant output without consuming events", async () => {
@@ -28,7 +30,7 @@ describe("AgentRunner", () => {
     });
     const session = new Session({
       id: "session-1",
-      contextBlocks: [{ id: "context-1", source: "AGENTS.md", content: "Follow project rules." }],
+      promptContext: testPromptContext(),
     });
     const turn = session.createTurn({
       agentId: agent.id,
@@ -69,6 +71,10 @@ describe("AgentRunner", () => {
       {
         role: "user",
         content: [{ type: "text", text: "Context from AGENTS.md:\n\nFollow project rules." }],
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: expectedTurnContextText("fake-model") }],
       },
       {
         role: "user",
@@ -141,6 +147,159 @@ describe("AgentRunner", () => {
       content: [{ type: "text", text: "All done" }],
     });
   });
+
+  test("writes run-scoped trace records without duplicating assistant or tool message content", async () => {
+    const provider = new SequenceProvider([
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool-use-1", name: "echo_tool", input: { value: "hello" } }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "All done" }],
+        finishReason: "stop",
+      },
+    ]);
+    const tool = defineTool({
+      name: "echo_tool",
+      description: "Echo tool",
+      parameters: z.object({ value: z.string() }),
+      invoke: async ({ value }) => `echoed ${value}`,
+    });
+    const agent = new Agent({
+      id: "agent-1",
+      model: new Model("fake-model", provider),
+      prompt: "Use tools.",
+      tools: [tool],
+    });
+    const eventLog = new MemorySessionEventLog();
+    const session = new Session({
+      id: "session-1",
+      promptContext: testPromptContext(),
+      eventLog,
+    });
+    const turn = session.createTurn({ agentId: agent.id, input: "Run echo" });
+
+    const run = new AgentRunner().startTurn({ session, agent, turnId: turn.id });
+
+    await run.done;
+    const traceEvents = eventLog.events.filter((event) => event.criticality === "trace");
+
+    expect(traceEvents.map((event) => event.type)).toEqual([
+      "turn_run_started",
+      "turn_context_snapshot",
+      "prompt_context_snapshot",
+      "model_request",
+      "model_response",
+      "tool_started",
+      "tool_finished",
+      "model_request",
+      "model_response",
+      "turn_run_completed",
+    ]);
+    expect(traceEvents.find((event) => event.type === "prompt_context_snapshot")?.data).toEqual({
+      promptContext: expect.objectContaining({
+        sourceSetHash: expect.stringMatching(/^sha256:/),
+        items: [expect.objectContaining({ sourcePath: "AGENTS.md", contentHash: expect.stringMatching(/^sha256:/) })],
+      }),
+    });
+    const modelRequest = traceEvents.find((event) => event.type === "model_request")!;
+    expect(modelRequest.requestId).toBe("request-1");
+    expect(modelRequest.data).toEqual({
+      stepIndex: 0,
+      renderedMessages: expect.arrayContaining([
+        expect.objectContaining({ source: "prompt_context", sourceItemIds: ["context-1"] }),
+        expect.objectContaining({ source: "turn_context", cacheSegment: "volatile" }),
+      ]),
+    });
+    const modelResponses = traceEvents.filter((event) => event.type === "model_response");
+    expect(modelResponses[0]?.data).toEqual({
+      assistantMessageId: "message-2",
+      usage: undefined,
+      finishReason: undefined,
+      durationMs: expect.any(Number),
+    });
+    expect(modelResponses[1]?.data).toEqual({
+      assistantMessageId: "message-4",
+      usage: undefined,
+      finishReason: "stop",
+      durationMs: expect.any(Number),
+    });
+    const modelResponse = modelResponses[0]!;
+    expect(JSON.stringify(modelResponse.data)).not.toContain("tool-use-1");
+    const toolFinished = traceEvents.find((event) => event.type === "tool_finished")!;
+    expect(toolFinished.data).toEqual({
+      toolResultMessageId: "message-3",
+      ok: true,
+      startedAt: expect.any(String),
+      finishedAt: expect.any(String),
+      durationMs: expect.any(Number),
+      error: undefined,
+    });
+    expect(JSON.stringify(toolFinished.data)).not.toContain("echoed hello");
+    expect(traceEvents.find((event) => event.type === "turn_run_completed")?.data).toEqual({
+      durationMs: expect.any(Number),
+    });
+  });
+
+  test("writes a trace close record when a run is interrupted", async () => {
+    const providerContinue = deferred<void>();
+    const provider = new BlockingProvider(providerContinue.promise);
+    const agent = new Agent({
+      id: "agent-1",
+      model: new Model("fake-model", provider),
+      prompt: "Wait.",
+    });
+    const eventLog = new MemorySessionEventLog();
+    const session = new Session({ id: "session-1", eventLog });
+    const turn = session.createTurn({ agentId: agent.id, input: "Wait" });
+
+    const run = new AgentRunner().startTurn({ session, agent, turnId: turn.id });
+    await provider.started.promise;
+    run.interrupt();
+    providerContinue.resolve();
+    await run.done;
+
+    const traceEvents = eventLog.events.filter((event) => event.criticality === "trace");
+    expect(traceEvents.map((event) => event.type)).toEqual([
+      "turn_run_started",
+      "turn_context_snapshot",
+      "prompt_context_snapshot",
+      "model_request",
+      "turn_run_interrupted",
+    ]);
+    expect(traceEvents.at(-1)?.data).toEqual({
+      reason: "Turn interrupted",
+      durationMs: expect.any(Number),
+    });
+  });
+
+  test("writes a trace close record when a run fails", async () => {
+    const agent = new Agent({
+      id: "agent-1",
+      model: new Model("fake-model", new EmptyProvider()),
+      prompt: "Fail.",
+    });
+    const eventLog = new MemorySessionEventLog();
+    const session = new Session({ id: "session-1", eventLog });
+    const turn = session.createTurn({ agentId: agent.id, input: "Fail" });
+
+    const run = new AgentRunner().startTurn({ session, agent, turnId: turn.id });
+
+    await expect(run.done).rejects.toThrow("Model stream ended without producing a message");
+    const traceEvents = eventLog.events.filter((event) => event.criticality === "trace");
+    expect(traceEvents.map((event) => event.type)).toEqual([
+      "turn_run_started",
+      "turn_context_snapshot",
+      "prompt_context_snapshot",
+      "model_request",
+      "turn_run_failed",
+    ]);
+    expect(traceEvents.at(-1)?.data).toEqual({
+      error: "Model stream ended without producing a message",
+      durationMs: expect.any(Number),
+    });
+  });
 });
 
 class CapturingProvider implements ModelProvider {
@@ -184,10 +343,91 @@ class SequenceProvider implements ModelProvider {
   }
 }
 
+class BlockingProvider implements ModelProvider {
+  readonly started = deferred<void>();
+  private readonly _resume: Promise<void>;
+
+  constructor(resume: Promise<void>) {
+    this._resume = resume;
+  }
+
+  async invoke(): Promise<AssistantMessage> {
+    this.started.resolve();
+    await this._resume;
+    return { role: "assistant", content: [{ type: "text", text: "Done" }] };
+  }
+
+  async *stream(): AsyncGenerator<AssistantMessage> {
+    this.started.resolve();
+    await this._resume;
+    yield { role: "assistant", content: [{ type: "text", text: "Done" }] };
+  }
+}
+
+class EmptyProvider implements ModelProvider {
+  async invoke(): Promise<AssistantMessage> {
+    throw new Error("Model stream ended without producing a message");
+  }
+
+  stream(): AsyncGenerator<AssistantMessage> {
+    return emptyAssistantMessages();
+  }
+}
+
 function deferred<T>() {
   let resolve!: PromiseWithResolvers<T>["resolve"];
   const promise = new Promise<T>((innerResolve) => {
     resolve = innerResolve;
   });
   return { promise, resolve };
+}
+
+function expectedTurnContextText(model: string) {
+  return [
+    "Turn context:",
+    "",
+    `Current date: ${currentDate()}`,
+    `Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`,
+    `Working directory: ${process.cwd()}`,
+    `Model: ${model}`,
+  ].join("\n");
+}
+
+function currentDate() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function testPromptContext() {
+  return defineEffectivePromptContext([
+    definePromptContextItem({
+      id: "context-1",
+      kind: "project_instructions",
+      sourcePath: "AGENTS.md",
+      scope: "project",
+      precedence: 0,
+      content: "Follow project rules.",
+    }),
+  ]);
+}
+
+function emptyAssistantMessages(): AsyncGenerator<AssistantMessage> {
+  return {
+    async next() {
+      return { done: true, value: undefined as never };
+    },
+    async return(value?: unknown) {
+      return { done: true, value: value as never };
+    },
+    async throw(error?: unknown) {
+      throw error;
+    },
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    async [Symbol.asyncDispose]() {},
+  };
 }

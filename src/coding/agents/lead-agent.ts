@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { Agent, Session } from "@/agent";
+import { Agent, JsonlSessionEventLog, projectEventLogPath, Session } from "@/agent";
 import { createSkillsMiddleware } from "@/agent/skills/skills-middleware";
 import { createTodoSystem } from "@/agent/todos/todos";
 import type { Model, ToolUseContent } from "@/foundation";
@@ -28,6 +28,8 @@ import { readFileTool } from "../tools/read-file";
 import { strReplaceTool } from "../tools/str-replace";
 import { setWorkspaceBaseDir } from "../tools/tool-utils";
 import { writeFileTool } from "../tools/write-file";
+
+import { loadCodingPromptContext } from "./instruction-context";
 
 export async function createCodingAgent({
   model,
@@ -109,15 +111,19 @@ Use the given tools and skills to perform parallel/sequential operations and sol
   });
 }
 
-export async function createCodingSession({ cwd = process.cwd() }: { cwd?: string } = {}) {
-  const agentsFile = Bun.file(`${cwd}/AGENTS.md`);
-  const contextBlocks = [];
-  if (await agentsFile.exists()) {
-    contextBlocks.push({
-      id: "agents-md",
-      source: "AGENTS.md",
-      content: await agentsFile.text(),
-    });
-  }
-  return new Session({ contextBlocks });
+export async function createCodingSession({
+  cwd = process.cwd(),
+  helixentHome = Bun.env.HELIXENT_HOME?.trim() || join(process.env.HOME || process.env.USERPROFILE || ".", ".helixent"),
+  id = "session-1",
+}: {
+  cwd?: string;
+  helixentHome?: string;
+  id?: string;
+} = {}) {
+  return new Session({
+    id,
+    promptContext: await loadCodingPromptContext({ cwd, helixentHome }),
+    promptContextRefresh: () => loadCodingPromptContext({ cwd, helixentHome }),
+    eventLog: new JsonlSessionEventLog({ path: projectEventLogPath({ helixentHome, cwd, sessionId: id }) }),
+  });
 }
