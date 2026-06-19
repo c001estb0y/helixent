@@ -94,7 +94,7 @@ export function AgentLoopProvider({
       }
 
       if (invocation?.name === "clear") {
-        const nextSession = new Session({ contextBlocks: sessionRef.current.contextBlocks });
+        const nextSession = new Session({ promptContext: sessionRef.current.promptContext });
         sessionRef.current = nextSession;
         activeTurnIdRef.current = null;
         queuedSubmissionRef.current = null;

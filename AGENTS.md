@@ -23,7 +23,7 @@ Design intent:
 
 - Keep these types stable and reusable.
 - Prefer adding new backends by extending `ModelProvider`.
-- Keep `Message` as the single source of truth for the conversation transcript.
+- Keep `Message` as the conversation transcript type; keep durable non-transcript context in `contextBlocks`.
 
 ### 2) `agent`
 
@@ -36,16 +36,27 @@ A reusable **ReAct-style agent loop**:
 Files:
 - `src/agent/agent.ts`
 - `src/agent/agent-middleware.ts`
+- `src/agent/session.ts`
+- `src/agent/agent-runner.ts`
+- `src/agent/turn-run.ts`
 - `src/agent/skills/*` (skill system middleware)
+- `src/agent/todos/*` (todo system middleware/tool)
 
 This layer should depend only on `foundation`, and remain generic (not coding-specific).
+
+Current execution model:
+
+- `Session` owns durable transcript entries, turn state, and `contextBlocks`.
+- `AgentRunner` is stateless orchestration: it starts a `TurnRun` for a session turn.
+- `TurnRun` is one execution attempt: model stream, tool calls, middleware hooks, and turn completion/interruption.
 
 ### 3) `coding`
 
 A layer for coding-specific agents and tools.
 
 - **Leading Agent**: `src/coding/agents/lead-agent.ts`
-- **Tools**: `src/coding/tools/*`, including `bash`, `read_file`, `write_file`, `str_replace`, `list_files`, `glob_search`, `grep_search`, `apply_patch`, `file_info`, `mkdir`, `move_path`
+- **Tools**: `src/coding/tools/*`, including `bash`, `read_file`, `write_file`, `str_replace`, `list_files`, `glob_search`, `grep_search`, `apply_patch`, `file_info`, `mkdir`, `move_path`, `ask_user_question`
+- **Injected agent tools**: `todo_write` comes from `src/agent/todos/*`.
 
 ### 4) `cli`
 
@@ -65,24 +76,25 @@ In-repo integrations live under `src/community/*`.
 Current integrations:
 
 - `src/community/openai`: `OpenAIModelProvider` backed by the `openai` SDK, using Chat Completions with function tools.
+- `src/community/anthropic`: `AnthropicModelProvider` backed by `@anthropic-ai/sdk`, using Messages with tool use.
 
 ## Skills
 
 Skill system for enhancing agent capabilities:
 
-- Skills are loaded from the `skills/` directory at the project root
+- Skills are loaded from configured skill directories, including project `skills/`, project `.agents/skills/`, `HELIXENT_HOME/skills`, `~/.agents/skills`, and `~/.helixent/skills`.
 - Each skill is a self-contained module with a `SKILL.md` definition
 - Skill middleware: `src/agent/skills/skill-reader.ts`, `src/agent/skills/skills-middleware.ts`
 
-Current skills:
-- `skill-creator` - Create and manage skills
-- `frontend-design` - Frontend design and UI development
+Current project skills:
+- `coding-plan`
+- `deep-research-plan`
 
 ## Stack
 
 - **Runtime / package manager**: [Bun](https://bun.com)
 - **Language**: TypeScript (strict, `moduleResolution: "bundler"`)
-- **Dependencies**: `openai` (provider SDK), `zod` (tool parameter schemas), `ink` (TUI), `react` (UI components)
+- **Dependencies**: provider SDKs (`openai`, `@anthropic-ai/sdk`), tool/config schemas (`zod`, `yaml`, `gray-matter`), CLI/TUI (`commander`, `ink`, `react`, Ink helpers).
 
 ## Imports
 
@@ -92,8 +104,20 @@ Current skills:
 
 - Keep comments minimal and intent-focused.
 - Avoid drive-by refactors outside the task at hand.
-- Provider options: `OpenAIModelProvider` merges `Model.options` into `chat.completions.create` (provider-specific flags allowed). Defaults include `temperature: 0` and `top_p: 0`.
+- Provider options: providers merge `Model.options` into provider calls. OpenAI defaults include `temperature: 0`; Anthropic normalizes thinking budget when thinking is enabled.
 - Agent loop: when an assistant message contains tool calls, tools are invoked in parallel and appended as `tool_result` messages before continuing.
+
+## Reference Agent Projects
+
+When the user asks to reference or compare with other Agent projects, look under `E:\Github\HermesAgent`.
+
+Relevant local projects:
+
+- `E:\Github\HermesAgent\codex`
+- `E:\Github\HermesAgent\claudecode`
+- `E:\Github\HermesAgent\hermes`
+
+Prefer reading these local sources before guessing behavior from memory.
 
 ## Commands
 
@@ -109,7 +133,7 @@ bun run build:bin
 bun test
 ```
 
-Environment variables used by the sample root `index.ts` are provider-specific (e.g. `ARK_BASE_URL`, `ARK_API_KEY` for an OpenAI-compatible endpoint).
+Model credentials are configured through the CLI config/settings flow rather than the root `index.ts`; `index.ts` only boots the CLI.
 
 ## Testing
 

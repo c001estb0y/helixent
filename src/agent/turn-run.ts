@@ -2,14 +2,18 @@ import type {
   AssistantMessage,
   ModelContext,
   NonSystemMessage,
+  RenderedModelRequest,
   ToolMessage,
   ToolUseContent,
 } from "@/foundation";
 
 import type { Agent, AgentContext } from "./agent";
 import type { TurnRunEvent } from "./agent-event";
+import { renderModelRequest } from "./prompt-assembly";
+import type { EffectivePromptContext } from "./prompt-context";
 import type { Session, TurnId } from "./session";
 import { formatToolResultForMessage } from "./tool-result-runtime";
+import { captureTurnContext, type TurnContext } from "./turn-context";
 
 export interface TurnRunOptions {
   session: Session;
@@ -27,14 +31,19 @@ export class TurnRun {
   private readonly _session: Session;
   private readonly _agent: Agent;
   private readonly _turnId: TurnId;
+  private readonly _runId: string;
+  private readonly _startedAtMs = Date.now();
   private readonly _abortController = new AbortController();
   private readonly _events = new AsyncEventQueue<TurnRunEvent>();
   private _agentContext: AgentContext | null = null;
+  private _turnContext: TurnContext | null = null;
+  private _promptContextSnapshot: EffectivePromptContext | null = null;
 
   constructor({ session, agent, turnId }: TurnRunOptions) {
     this._session = session;
     this._agent = agent;
     this._turnId = turnId;
+    this._runId = session.nextRunId();
     this.events = this._events;
     this.done = this._run();
   }
@@ -50,6 +59,7 @@ export class TurnRun {
       if (!turn) {
         throw new Error(`Turn ${this._turnId} not found`);
       }
+      await this._session.refreshPromptContext();
       this._session.markTurnRunning(this._turnId);
       this._events.push({ type: "turn_started", turnId: this._turnId });
 
@@ -59,20 +69,38 @@ export class TurnRun {
         tools: this._agent.tools,
         requestedSkillName: turn.options?.requestedSkillName,
       };
+      this._turnContext = captureTurnContext({
+        cwd: process.cwd(),
+        model: this._agent.model.name,
+      });
+      this._promptContextSnapshot = this._session.promptContext;
+      this._recordTrace("turn_run_started", {});
+      this._recordTrace("turn_context_snapshot", { turnContext: this._turnContext });
+      this._recordTrace("prompt_context_snapshot", { promptContext: this._promptContextSnapshot });
       await this._beforeAgentRun();
 
       for (let step = 1; step <= this._agent.options.maxSteps; step++) {
         this._abortController.signal.throwIfAborted();
         await this._beforeAgentStep(step);
-        const assistantMessage = await this._think();
+        const { assistantMessage, requestId, durationMs } = await this._think(step);
+        this._abortController.signal.throwIfAborted();
         await this._afterModel(assistantMessage);
         const messageId = this._appendMessage(assistantMessage);
+        this._recordTrace("model_response", {
+          assistantMessageId: messageId,
+          usage: assistantMessage.usage,
+          finishReason: assistantMessage.finishReason,
+          durationMs,
+        }, { requestId, messageId });
         this._events.push({ type: "message", turnId: this._turnId, messageId });
 
         const toolUses = this._extractToolUses(assistantMessage);
         if (toolUses.length === 0) {
           await this._afterAgentRun();
           this._session.completeTurn(this._turnId);
+          this._recordTrace("turn_run_completed", {
+            durationMs: this._durationMs(),
+          });
           this._events.push({ type: "turn_completed", turnId: this._turnId });
           return;
         }
@@ -84,12 +112,20 @@ export class TurnRun {
     } catch (error) {
       if (this._abortController.signal.aborted) {
         this._session.interruptTurn(this._turnId);
+        this._recordTrace("turn_run_interrupted", {
+          reason: abortReason(this._abortController.signal.reason),
+          durationMs: this._durationMs(),
+        });
         this._events.push({ type: "turn_interrupted", turnId: this._turnId });
         return;
       }
 
       const message = error instanceof Error ? error.message : String(error);
       this._session.failTurn(this._turnId, message);
+      this._recordTrace("turn_run_failed", {
+        error: message,
+        durationMs: this._durationMs(),
+      });
       this._events.push({ type: "turn_failed", turnId: this._turnId, error: message });
       throw error;
     } finally {
@@ -97,18 +133,38 @@ export class TurnRun {
     }
   }
 
-  private async _think(): Promise<AssistantMessage> {
+  private async _think(
+    step: number,
+  ): Promise<{ assistantMessage: AssistantMessage; requestId: string; durationMs: number }> {
     const modelContext: ModelContext = {
       prompt: this._context.prompt,
-      contextBlocks: this._session.contextBlocks,
-      messages: this._session.messages,
       tools: this._context.tools,
       signal: this._abortController.signal,
     };
     await this._beforeModel(modelContext);
 
+    const assembled = renderModelRequest({
+      agentPrompt: modelContext.prompt,
+      promptContextItems: this._getPromptContextSnapshot().items,
+      turnContext: this._getTurnContext(),
+      transcriptMessages: this._session.messages,
+    });
+    const requestId = this._session.nextRequestId();
+    const startedAtMs = Date.now();
+    this._recordTrace("model_request", {
+      stepIndex: step - 1,
+      renderedMessages: assembled.renderedMessages,
+    }, { requestId });
+    const renderedRequest: RenderedModelRequest = {
+      model: this._agent.model.name,
+      options: this._agent.model.options,
+      messages: assembled.messages,
+      tools: modelContext.tools,
+      signal: modelContext.signal,
+    };
+
     let latest: AssistantMessage | null = null;
-    for await (const snapshot of this._agent.model.stream(modelContext)) {
+    for await (const snapshot of this._agent.model.streamRendered(renderedRequest)) {
       latest = snapshot;
       if (snapshot.streaming) {
         this._events.push(this._deriveProgress(snapshot));
@@ -120,7 +176,7 @@ export class TurnRun {
     if (latest.streaming) {
       delete latest.streaming;
     }
-    return latest;
+    return { assistantMessage: latest, requestId, durationMs: Date.now() - startedAtMs };
   }
 
   private _deriveProgress(snapshot: AssistantMessage): TurnRunEvent {
@@ -142,19 +198,25 @@ export class TurnRun {
     const signal = this._abortController.signal;
     const pending = toolUses.map(async (toolUse, index) => {
       this._events.push({ type: "tool_started", turnId: this._turnId, toolUseId: toolUse.id, name: toolUse.name });
+      const startedAt = new Date().toISOString();
+      this._recordTrace("tool_started", {
+        name: toolUse.name,
+        input: toolUse.input,
+        startedAt,
+      }, { toolUseId: toolUse.id });
       try {
         const tool = this._context.tools?.find((candidate) => candidate.name === toolUse.name);
         if (!tool) throw new Error(`Tool ${toolUse.name} not found`);
         const beforeResult = await this._beforeToolUse(toolUse);
         if (beforeResult.skip) {
-          return { index, toolUseId: toolUse.id, toolName: toolUse.name, result: beforeResult.result };
+          return { index, startedAt, toolUseId: toolUse.id, toolName: toolUse.name, result: beforeResult.result };
         }
         const result = await tool.invoke(toolUse.input, signal);
         await this._afterToolUse(toolUse, result);
-        return { index, toolUseId: toolUse.id, toolName: toolUse.name, result };
+        return { index, startedAt, toolUseId: toolUse.id, toolName: toolUse.name, result };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return { index, toolUseId: toolUse.id, toolName: toolUse.name, result: `Error: ${message}` };
+        return { index, startedAt, toolUseId: toolUse.id, toolName: toolUse.name, result: `Error: ${message}` };
       }
     });
 
@@ -183,6 +245,16 @@ export class TurnRun {
         ],
       };
       const messageId = this._appendMessage(toolMessage);
+      const resultText = typeof resolved.result === "string" ? resolved.result : undefined;
+      const ok = !resultText?.startsWith("Error:");
+      this._recordTrace("tool_finished", {
+        toolResultMessageId: messageId,
+        ok,
+        startedAt: resolved.startedAt,
+        finishedAt: new Date().toISOString(),
+        durationMs: Math.max(0, Date.now() - Date.parse(resolved.startedAt)),
+        error: ok ? undefined : resultText,
+      }, { toolUseId: resolved.toolUseId, messageId });
       this._events.push({ type: "message", turnId: this._turnId, messageId });
       this._events.push({
         type: "tool_finished",
@@ -202,6 +274,40 @@ export class TurnRun {
       throw new Error("Agent context is not initialized");
     }
     return this._agentContext;
+  }
+
+  private _getTurnContext() {
+    if (!this._turnContext) {
+      throw new Error("Turn context is not initialized");
+    }
+    return this._turnContext;
+  }
+
+  private _getPromptContextSnapshot() {
+    if (!this._promptContextSnapshot) {
+      throw new Error("Prompt context snapshot is not initialized");
+    }
+    return this._promptContextSnapshot;
+  }
+
+  private _recordTrace<TType extends string, TData>(
+    type: TType,
+    data: TData,
+    ids: { requestId?: string; messageId?: string; toolUseId?: string } = {},
+  ) {
+    this._session.recordTraceEvent({
+      type,
+      turnId: this._turnId,
+      runId: this._runId,
+      requestId: ids.requestId,
+      messageId: ids.messageId,
+      toolUseId: ids.toolUseId,
+      data,
+    });
+  }
+
+  private _durationMs() {
+    return Date.now() - this._startedAtMs;
   }
 
   private async _beforeModel(modelContext: ModelContext) {
@@ -287,6 +393,13 @@ export class TurnRun {
       }
     }
   }
+}
+
+function abortReason(reason: unknown) {
+  if (reason instanceof Error) {
+    return reason.message;
+  }
+  return reason ? String(reason) : "Turn interrupted";
 }
 
 class AsyncEventQueue<T> implements AsyncIterable<T> {

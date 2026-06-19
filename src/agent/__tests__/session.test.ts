@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 import { Session } from "../session";
+import { MemorySessionEventLog } from "../session-event-log";
 
 describe("Session", () => {
   test("creates a turn and records the initial user input inside the session transcript", () => {
-    const session = new Session({ id: "session-1" });
+    const eventLog = new MemorySessionEventLog();
+    const session = new Session({ id: "session-1", eventLog });
 
     const turn = session.createTurn({
       agentId: "agent-1",
@@ -29,6 +31,23 @@ describe("Session", () => {
       id: "message-1",
       metadata: { turnInputKind: "initial" },
     });
+    expect(eventLog.events.map((event) => event.type)).toEqual([
+      "prompt_context_set",
+      "turn_created",
+      "message_appended",
+    ]);
+    expect(eventLog.events.at(-1)).toEqual(expect.objectContaining({
+      criticality: "session",
+      turnId: "turn-1",
+      messageId: "message-1",
+      data: {
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Implement the ADR" }],
+        },
+        metadata: { turnInputKind: "initial" },
+      },
+    }));
   });
 
   test("continues an interrupted turn by appending steer input to the same turn", () => {

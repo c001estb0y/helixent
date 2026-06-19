@@ -83,7 +83,7 @@ describe("createTodoSystem", () => {
     test("beforeModel does nothing when store is empty", async () => {
       const { middleware } = createTodoSystem();
       const result = await middleware.beforeModel?.({
-        modelContext: { prompt: "hello", messages: [] },
+        modelContext: { prompt: "hello" },
         agentContext: mockContext,
       });
       expect(result).toBeUndefined();

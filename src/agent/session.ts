@@ -1,5 +1,17 @@
 import type { NonSystemMessage, ToolMessage, ToolUseContent, UserMessage } from "@/foundation";
 
+import {
+  cloneEffectivePromptContext,
+  defineEffectivePromptContext,
+  type EffectivePromptContext,
+} from "./prompt-context";
+import {
+  MemorySessionEventLog,
+  type SessionEventCriticality,
+  type SessionEventEnvelope,
+  type SessionEventLog,
+} from "./session-event-log";
+
 /** Session identifier. */
 export type SessionId = string;
 /** Turn identifier. */
@@ -51,16 +63,12 @@ export interface SessionMessage {
   metadata?: SessionMessageMetadata;
 }
 
-/** Durable model-visible context that is not part of the turn transcript. */
-export interface SessionContextBlock {
-  id: string;
-  content: string;
-  source?: string;
-}
-
 export interface SessionOptions {
   id?: SessionId;
-  contextBlocks?: SessionContextBlock[];
+  promptContext?: EffectivePromptContext;
+  promptContextRefresh?: () => Promise<EffectivePromptContext | undefined>;
+  eventLog?: SessionEventLog;
+  recordInitialPromptContext?: boolean;
 }
 
 export interface CreateTurnParams {
@@ -75,15 +83,38 @@ export interface CreateTurnParams {
 export class Session {
   readonly id: SessionId;
 
+  readonly eventLog: SessionEventLog;
+
   private readonly _turns: Turn[] = [];
   private readonly _messages: SessionMessage[] = [];
-  private readonly _contextBlocks: SessionContextBlock[];
+  private _promptContext: EffectivePromptContext;
+  private readonly _promptContextRefresh?: () => Promise<EffectivePromptContext | undefined>;
+  private _nextEventNumber = 1;
+  private _nextRunNumber = 1;
+  private _nextRequestNumber = 1;
   private _nextTurnNumber = 1;
   private _nextMessageNumber = 1;
 
-  constructor({ id = "session-1", contextBlocks = [] }: SessionOptions = {}) {
+  constructor({
+    id = "session-1",
+    promptContext,
+    promptContextRefresh,
+    eventLog,
+    recordInitialPromptContext = true,
+  }: SessionOptions = {}) {
     this.id = id;
-    this._contextBlocks = [...contextBlocks];
+    this.eventLog = eventLog ?? new MemorySessionEventLog();
+    this._promptContext = promptContext
+      ? cloneEffectivePromptContext(promptContext)
+      : defineEffectivePromptContext([]);
+    this._promptContextRefresh = promptContextRefresh;
+    if (recordInitialPromptContext) {
+      this._recordEvent({
+        type: "prompt_context_set",
+        criticality: "session",
+        data: { promptContext: this.promptContext },
+      });
+    }
   }
 
   /** Provider-facing transcript projection. */
@@ -91,9 +122,32 @@ export class Session {
     return this._messages.map((entry) => entry.message);
   }
 
-  /** Durable session context outside the turn transcript. */
-  get contextBlocks(): SessionContextBlock[] {
-    return [...this._contextBlocks];
+  /** Typed durable prompt context outside the turn transcript. */
+  get promptContext(): EffectivePromptContext {
+    return cloneEffectivePromptContext(this._promptContext);
+  }
+
+  /** Replaces the current effective prompt context projection. */
+  setPromptContext(promptContext: EffectivePromptContext) {
+    this._promptContext = cloneEffectivePromptContext(promptContext);
+    this._recordEvent({
+      type: "prompt_context_set",
+      criticality: "session",
+      data: { promptContext: this.promptContext },
+    });
+  }
+
+  /** Refreshes prompt context before a run when a session factory provides a loader. */
+  async refreshPromptContext(): Promise<boolean> {
+    if (!this._promptContextRefresh) {
+      return false;
+    }
+    const nextPromptContext = await this._promptContextRefresh();
+    if (!nextPromptContext || nextPromptContext.sourceSetHash === this._promptContext.sourceSetHash) {
+      return false;
+    }
+    this.setPromptContext(nextPromptContext);
+    return true;
   }
 
   /** Turn snapshots owned by this session. */
@@ -115,10 +169,16 @@ export class Session {
       options,
     };
     this._turns.push(turn);
+    this._recordEvent({
+      type: "turn_created",
+      criticality: "session",
+      turnId: turn.id,
+      data: { turn: this._cloneTurn(turn) },
+    });
 
     const messageId = this._appendMessage(inputToUserMessage(input), {
       turnInputKind: "initial",
-    });
+    }, turn.id);
     turn.inputMessageIds.push(messageId);
 
     return this._cloneTurn(turn);
@@ -145,7 +205,7 @@ export class Session {
     this._repairDanglingToolUses(turn);
     const messageId = this._appendMessage(inputToUserMessage(input), {
       turnInputKind: "steer",
-    });
+    }, turn.id);
     turn.inputMessageIds.push(messageId);
     turn.messageEndIndex = undefined;
     return this._cloneTurn(turn);
@@ -160,13 +220,14 @@ export class Session {
     if (this._isTerminal(turn.status)) {
       throw new Error(`Cannot append messages to terminal turn ${turnId}`);
     }
-    return this._appendMessage(message, metadata);
+    return this._appendMessage(message, metadata, turnId);
   }
 
   markTurnRunning(turnId: TurnId): Turn {
     const turn = this._requireTurn(turnId);
     this._transitionTurn(turn, "running");
     turn.startedAt ??= new Date();
+    this._recordTurnStatusChanged(turn);
     return this._cloneTurn(turn);
   }
 
@@ -175,6 +236,7 @@ export class Session {
     this._transitionTurn(turn, "interrupted");
     turn.interruptedAt = new Date();
     turn.messageEndIndex = this._messages.length;
+    this._recordTurnStatusChanged(turn);
     return this._cloneTurn(turn);
   }
 
@@ -183,6 +245,7 @@ export class Session {
     this._transitionTurn(turn, "completed");
     turn.completedAt = new Date();
     turn.messageEndIndex = this._messages.length;
+    this._recordTurnStatusChanged(turn);
     return this._cloneTurn(turn);
   }
 
@@ -192,6 +255,7 @@ export class Session {
     turn.failedAt = new Date();
     turn.messageEndIndex = this._messages.length;
     turn.error = error;
+    this._recordTurnStatusChanged(turn);
     return this._cloneTurn(turn);
   }
 
@@ -200,12 +264,61 @@ export class Session {
     this._transitionTurn(turn, "cancelled");
     turn.cancelledAt = new Date();
     turn.messageEndIndex = this._messages.length;
+    this._recordTurnStatusChanged(turn);
     return this._cloneTurn(turn);
   }
 
-  private _appendMessage(message: NonSystemMessage, metadata?: SessionMessageMetadata): MessageId {
+  nextRunId() {
+    return `run-${this._nextRunNumber++}`;
+  }
+
+  nextRequestId() {
+    return `request-${this._nextRequestNumber++}`;
+  }
+
+  recordTraceEvent<TType extends string, TData>({
+    type,
+    turnId,
+    runId,
+    requestId,
+    messageId,
+    toolUseId,
+    data,
+  }: {
+    type: TType;
+    turnId?: TurnId;
+    runId?: string;
+    requestId?: string;
+    messageId?: MessageId;
+    toolUseId?: string;
+    data: TData;
+  }) {
+    this._recordEvent({
+      type,
+      criticality: "trace",
+      turnId,
+      runId,
+      requestId,
+      messageId,
+      toolUseId,
+      data,
+    });
+  }
+
+  private _appendMessage(
+    message: NonSystemMessage,
+    metadata?: SessionMessageMetadata,
+    turnId?: TurnId,
+  ): MessageId {
     const id = this._nextMessageId();
     this._messages.push({ id, message, metadata });
+    this._recordEvent({
+      type: "message_appended",
+      criticality: "session",
+      turnId,
+      messageId: id,
+      data: { message, metadata },
+    });
     return id;
   }
 
@@ -243,8 +356,52 @@ export class Session {
         synthetic: true,
         source: "session",
         reason: "interrupt",
-      });
+      }, turn.id);
     }
+  }
+
+  private _recordTurnStatusChanged(turn: Turn) {
+    this._recordEvent({
+      type: "turn_status_changed",
+      criticality: "session",
+      turnId: turn.id,
+      data: { status: turn.status, error: turn.error },
+    });
+  }
+
+  private _recordEvent<TType extends string, TData>({
+    type,
+    criticality,
+    turnId,
+    runId,
+    requestId,
+    messageId,
+    toolUseId,
+    data,
+  }: {
+    type: TType;
+    criticality: SessionEventCriticality;
+    turnId?: TurnId;
+    runId?: string;
+    requestId?: string;
+    messageId?: MessageId;
+    toolUseId?: string;
+    data: TData;
+  }) {
+    const event: SessionEventEnvelope<TType, TData> = {
+      eventId: this._nextEventId(),
+      type,
+      sessionId: this.id,
+      timestamp: new Date().toISOString(),
+      criticality,
+      data,
+    };
+    if (turnId) event.turnId = turnId;
+    if (runId) event.runId = runId;
+    if (requestId) event.requestId = requestId;
+    if (messageId) event.messageId = messageId;
+    if (toolUseId) event.toolUseId = toolUseId;
+    void this.eventLog.write(event);
   }
 
   private _assertNoActiveTurn() {
@@ -284,6 +441,10 @@ export class Session {
 
   private _nextMessageId() {
     return `message-${this._nextMessageNumber++}`;
+  }
+
+  private _nextEventId() {
+    return `event-${this._nextEventNumber++}`;
   }
 
   private _cloneTurn(turn: Turn): Turn {
