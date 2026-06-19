@@ -300,6 +300,107 @@ describe("AgentRunner", () => {
       durationMs: expect.any(Number),
     });
   });
+
+  test("auto-compacts the active transcript before a model request when the known model context budget is high", async () => {
+    const provider = new SequenceProvider([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Primary Request and Intent\nOld work summarized." }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Continuing after compact" }],
+      },
+    ]);
+    const tool = defineTool({
+      name: "echo_tool",
+      description: "Echo tool",
+      parameters: z.object({ value: z.string() }),
+      invoke: async ({ value }) => value,
+    });
+    const agent = new Agent({
+      id: "agent-1",
+      model: new Model("deepseek-v4-flash", provider),
+      prompt: "Use tools.",
+      tools: [tool],
+    });
+    const eventLog = new MemorySessionEventLog();
+    const session = new Session({ id: "session-1", eventLog });
+    const oldTurn = session.createTurn({ agentId: agent.id, input: "old request " + "x".repeat(2_600_000) });
+    session.markTurnRunning(oldTurn.id);
+    session.appendMessageToTurn(oldTurn.id, {
+      role: "assistant",
+      content: [{ type: "text", text: "old answer" }],
+    });
+    session.completeTurn(oldTurn.id);
+    const turn = session.createTurn({ agentId: agent.id, input: "latest request" });
+
+    const run = new AgentRunner().startTurn({ session, agent, turnId: turn.id });
+
+    await run.done;
+
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls[0]?.tools).toBeUndefined();
+    expect(provider.calls[0]?.options?.max_tokens).toBe(20_000);
+    expect(provider.calls[0]?.messages).toHaveLength(1);
+    expect(provider.calls[0]?.messages[0]?.role).toBe("user");
+    expect(provider.calls[1]?.tools).toEqual([tool]);
+    expect(provider.calls[1]?.messages.map((message) => message.role)).toEqual(["system", "user", "user", "user"]);
+    expect(provider.calls[1]?.messages.at(-2)).toEqual({
+      role: "user",
+      content: [{
+        type: "text",
+        text: expect.stringContaining("This is background context from transcript compaction"),
+      }],
+    });
+    expect(provider.calls[1]?.messages.at(-1)).toEqual({
+      role: "user",
+      content: [{ type: "text", text: "latest request" }],
+    });
+    expect(session.messages.at(-1)).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "Continuing after compact" }],
+    });
+    expect(eventLog.events.some((event) => event.type === "transcript_compacted")).toBe(true);
+  });
+
+  test("does not retry auto-compaction in the same turn after summary generation fails", async () => {
+    const provider = new FailingCompactionProvider();
+    const tool = defineTool({
+      name: "echo_tool",
+      description: "Echo tool",
+      parameters: z.object({ value: z.string() }),
+      invoke: async ({ value }) => value,
+    });
+    const agent = new Agent({
+      id: "agent-1",
+      model: new Model("deepseek-v4-flash", provider),
+      prompt: "Use tools.",
+      tools: [tool],
+    });
+    const eventLog = new MemorySessionEventLog();
+    const session = new Session({ id: "session-1", eventLog });
+    const oldTurn = session.createTurn({ agentId: agent.id, input: "old request " + "x".repeat(2_600_000) });
+    session.markTurnRunning(oldTurn.id);
+    session.completeTurn(oldTurn.id);
+    const turn = session.createTurn({ agentId: agent.id, input: "latest request" });
+
+    const run = new AgentRunner().startTurn({ session, agent, turnId: turn.id });
+
+    await run.done;
+
+    expect(provider.calls.map((call) => call.tools?.length ?? 0)).toEqual([0, 1, 1]);
+    expect(eventLog.events.filter((event) => event.type === "transcript_compaction_failed")).toHaveLength(1);
+    expect(eventLog.events.some((event) => event.type === "transcript_compacted")).toBe(false);
+    expect(session.messages[0]).toEqual({
+      role: "user",
+      content: [{ type: "text", text: expect.stringContaining("old request") }],
+    });
+    expect(session.messages.at(-1)).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "Done after failed compact" }],
+    });
+  });
 });
 
 class CapturingProvider implements ModelProvider {
@@ -371,6 +472,38 @@ class EmptyProvider implements ModelProvider {
 
   stream(): AsyncGenerator<AssistantMessage> {
     return emptyAssistantMessages();
+  }
+}
+
+class FailingCompactionProvider implements ModelProvider {
+  readonly calls: ModelProviderInvokeParams[] = [];
+  private _mainCalls = 0;
+
+  async invoke(params: ModelProviderInvokeParams): Promise<AssistantMessage> {
+    this.calls.push(params);
+    return this._nextMessage(params);
+  }
+
+  async *stream(params: ModelProviderInvokeParams): AsyncGenerator<AssistantMessage> {
+    this.calls.push(params);
+    yield this._nextMessage(params);
+  }
+
+  private _nextMessage(params: ModelProviderInvokeParams): AssistantMessage {
+    if (!params.tools) {
+      throw new Error("summary failed");
+    }
+    this._mainCalls++;
+    if (this._mainCalls === 1) {
+      return {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool-use-1", name: "echo_tool", input: { value: "ok" } }],
+      };
+    }
+    return {
+      role: "assistant",
+      content: [{ type: "text", text: "Done after failed compact" }],
+    };
   }
 }
 

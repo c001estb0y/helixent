@@ -77,6 +77,16 @@ export interface CreateTurnParams {
   options?: TurnOptions;
 }
 
+export interface InstallCompactedTranscriptParams {
+  summaryText: string;
+  compactedMessageIds: MessageId[];
+  preservedTailEntries: SessionMessage[];
+  tokenEstimate: unknown;
+  modelContextWindow: unknown;
+  reason: "auto-pre-request" | string;
+  turnId?: TurnId;
+}
+
 /**
  * Durable state for an agent conversation.
  */
@@ -120,6 +130,11 @@ export class Session {
   /** Provider-facing transcript projection. */
   get messages(): NonSystemMessage[] {
     return this._messages.map((entry) => entry.message);
+  }
+
+  /** Active transcript entries with stable session message IDs. */
+  get transcript(): SessionMessage[] {
+    return this._messages.map((entry) => this._cloneMessage(entry));
   }
 
   /** Typed durable prompt context outside the turn transcript. */
@@ -303,6 +318,49 @@ export class Session {
       toolUseId,
       data,
     });
+  }
+
+  installCompactedTranscript({
+    summaryText,
+    compactedMessageIds,
+    preservedTailEntries,
+    tokenEstimate,
+    modelContextWindow,
+    reason,
+    turnId,
+  }: InstallCompactedTranscriptParams): SessionMessage {
+    const summaryMessage: UserMessage = {
+      role: "user",
+      content: [{ type: "text", text: summaryText }],
+    };
+    const summaryEntry: SessionMessage = {
+      id: this._nextMessageId(),
+      message: summaryMessage,
+      metadata: { synthetic: true, source: "compact" },
+    };
+    const preservedTail = preservedTailEntries.map((entry) => this._cloneMessage(entry));
+    this._messages.length = 0;
+    this._messages.push(summaryEntry, ...preservedTail);
+
+    const preservedTailMessageIds = preservedTail.map((entry) => entry.id);
+    const replacementMessageIds = [summaryEntry.id, ...preservedTailMessageIds];
+    this._recordEvent({
+      type: "transcript_compacted",
+      criticality: "session",
+      turnId,
+      messageId: summaryEntry.id,
+      data: {
+        summaryMessage: this._cloneMessage(summaryEntry),
+        compactedMessageIds,
+        preservedTailMessageIds,
+        replacementMessageIds,
+        tokenEstimate,
+        modelContextWindow,
+        reason,
+      },
+    });
+
+    return this._cloneMessage(summaryEntry);
   }
 
   private _appendMessage(
