@@ -223,30 +223,49 @@ export class TurnRun {
     }
 
     try {
+      const sourceMaterial = serializeCompactionSourceMaterial(compactedEntries);
       const summaryText = await this._generateCompactionSummary({
         compactedEntries,
         compactedInputEstimateTokens: tokenEstimate.totalTokens,
+        sourceMaterial,
       });
       const summaryMessage = [
         "This is background context from transcript compaction, not a new user request.",
         "",
         summaryText,
       ].join("\n");
+      const replacementTranscriptMessages: NonSystemMessage[] = [
+        { role: "user", content: [{ type: "text", text: summaryMessage }] },
+        ...tail.entries.map((entry) => entry.message),
+      ];
+      const after = this._assembleRequest(modelContext.prompt, promptContextItems, turnContext, replacementTranscriptMessages);
+      const afterEstimate = estimateRenderedRequestTokens({ messages: after.messages, tools: modelContext.tools });
+      if (afterEstimate.totalTokens > targetTokens) {
+        this._autoCompactFailed = true;
+        this._recordTrace("transcript_compaction_failed", {
+          reason: "compacted_transcript_exceeds_target_budget",
+          tokenEstimate,
+          afterTokens: afterEstimate.totalTokens,
+          targetTokens,
+          modelContextWindow,
+        });
+        return assembled;
+      }
       this._session.installCompactedTranscript({
         summaryText: summaryMessage,
         compactedMessageIds: tail.compactedMessageIds,
         preservedTailEntries: tail.entries,
         tokenEstimate: {
           beforeTokens: tokenEstimate.totalTokens,
+          afterTokens: afterEstimate.totalTokens,
           triggerTokens,
           targetTokens,
         },
         modelContextWindow,
+        compactionSourceMaterial: sourceMaterial,
         reason: "auto-pre-request",
         turnId: this._turnId,
       });
-      const after = this._assembleRequest(modelContext.prompt, promptContextItems, turnContext);
-      const afterEstimate = estimateRenderedRequestTokens({ messages: after.messages, tools: modelContext.tools });
       this._recordTrace("transcript_compaction_succeeded", {
         beforeTokens: tokenEstimate.totalTokens,
         afterTokens: afterEstimate.totalTokens,
@@ -264,28 +283,34 @@ export class TurnRun {
     }
   }
 
-  private _assembleRequest(agentPrompt: string, promptContextItems: PromptContextItem[], turnContext: TurnContext) {
+  private _assembleRequest(
+    agentPrompt: string,
+    promptContextItems: PromptContextItem[],
+    turnContext: TurnContext,
+    transcriptMessages = this._session.messages,
+  ) {
     return renderModelRequest({
       agentPrompt,
       promptContextItems,
       turnContext,
-      transcriptMessages: this._session.messages,
+      transcriptMessages,
     });
   }
 
   private async _generateCompactionSummary({
     compactedEntries,
     compactedInputEstimateTokens,
+    sourceMaterial,
   }: {
     compactedEntries: SessionMessage[];
     compactedInputEstimateTokens: number;
+    sourceMaterial?: string;
   }) {
-    const sourceMaterial = serializeCompactionSourceMaterial(compactedEntries);
     const request = buildCompactionSummaryRequest({
       model: this._agent.model.name,
       modelOptions: this._agent.model.options,
       compactedInputEstimateTokens,
-      sourceMaterial,
+      sourceMaterial: sourceMaterial ?? serializeCompactionSourceMaterial(compactedEntries),
       signal: this._abortController.signal,
     });
     let latest: AssistantMessage | null = null;

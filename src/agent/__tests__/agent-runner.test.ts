@@ -361,7 +361,98 @@ describe("AgentRunner", () => {
       role: "assistant",
       content: [{ type: "text", text: "Continuing after compact" }],
     });
-    expect(eventLog.events.some((event) => event.type === "transcript_compacted")).toBe(true);
+    const compactedEvent = eventLog.events.find((event) => event.type === "transcript_compacted");
+    expect(compactedEvent?.data).toEqual(expect.objectContaining({
+      tokenEstimate: expect.objectContaining({
+        beforeTokens: expect.any(Number),
+        afterTokens: expect.any(Number),
+        triggerTokens: 850_000,
+        targetTokens: 550_000,
+      }),
+      replacementTranscript: expect.arrayContaining([
+        expect.objectContaining({
+          metadata: { synthetic: true, source: "compact" },
+        }),
+      ]),
+      compactionSourceMaterial: expect.stringContaining("[MESSAGE message-1 role=user]"),
+    }));
+  });
+
+  test("does not auto-compact unknown model names even when the request is large", async () => {
+    const provider = new SequenceProvider([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Done without compact" }],
+      },
+    ]);
+    const agent = new Agent({
+      id: "agent-1",
+      model: new Model("deepseek-v4-flash-custom", provider),
+      prompt: "Use tools.",
+    });
+    const eventLog = new MemorySessionEventLog();
+    const session = new Session({ id: "session-1", eventLog });
+    const oldTurn = session.createTurn({ agentId: agent.id, input: "old request " + "x".repeat(2_600_000) });
+    session.markTurnRunning(oldTurn.id);
+    session.completeTurn(oldTurn.id);
+    const turn = session.createTurn({ agentId: agent.id, input: "latest request" });
+
+    const run = new AgentRunner().startTurn({ session, agent, turnId: turn.id });
+
+    await run.done;
+
+    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls[0]?.messages.at(-2)).toEqual({
+      role: "user",
+      content: [{ type: "text", text: expect.stringContaining("old request") }],
+    });
+    expect(eventLog.events.some((event) => event.type === "transcript_compacted")).toBe(false);
+    expect(eventLog.events.some((event) => event.type === "transcript_compaction_failed")).toBe(false);
+  });
+
+  test("aborts compaction when the generated summary keeps the replacement request over target", async () => {
+    const provider = new SequenceProvider([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Primary Request and Intent\n" + "s".repeat(1_700_000) }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Continuing without compact" }],
+      },
+    ]);
+    const agent = new Agent({
+      id: "agent-1",
+      model: new Model("deepseek-v4-flash", provider),
+      prompt: "Use tools.",
+    });
+    const eventLog = new MemorySessionEventLog();
+    const session = new Session({ id: "session-1", eventLog });
+    const oldTurn = session.createTurn({ agentId: agent.id, input: "old request " + "x".repeat(2_600_000) });
+    session.markTurnRunning(oldTurn.id);
+    session.completeTurn(oldTurn.id);
+    const turn = session.createTurn({ agentId: agent.id, input: "latest request" });
+
+    const run = new AgentRunner().startTurn({ session, agent, turnId: turn.id });
+
+    await run.done;
+
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls[0]?.tools).toBeUndefined();
+    expect(eventLog.events.some((event) => event.type === "transcript_compacted")).toBe(false);
+    expect(eventLog.events.find((event) => event.type === "transcript_compaction_failed")?.data).toEqual(expect.objectContaining({
+      reason: "compacted_transcript_exceeds_target_budget",
+      afterTokens: expect.any(Number),
+      targetTokens: 550_000,
+    }));
+    expect(session.messages[0]).toEqual({
+      role: "user",
+      content: [{ type: "text", text: expect.stringContaining("old request") }],
+    });
+    expect(session.messages.at(-1)).toEqual({
+      role: "assistant",
+      content: [{ type: "text", text: "Continuing without compact" }],
+    });
   });
 
   test("does not retry auto-compaction in the same turn after summary generation fails", async () => {

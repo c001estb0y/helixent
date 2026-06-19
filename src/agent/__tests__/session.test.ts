@@ -173,6 +173,7 @@ describe("Session", () => {
       preservedTailEntries: preservedTail,
       tokenEstimate: { beforeTokens: 900, afterTokens: 500, triggerTokens: 850, targetTokens: 550 },
       modelContextWindow: { model: "deepseek-v4-flash", contextWindowTokens: 1_000_000 },
+      compactionSourceMaterial: "[MESSAGE message-1 role=user]\nold request",
       reason: "auto-pre-request",
       turnId: turn.id,
     });
@@ -200,6 +201,12 @@ describe("Session", () => {
         compactedMessageIds: ["message-1", "message-2"],
         preservedTailMessageIds: [latestUserId, assistantId],
         replacementMessageIds: ["message-5", latestUserId, assistantId],
+        replacementTranscript: [
+          summaryMessage,
+          preservedTail[0],
+          preservedTail[1],
+        ],
+        compactionSourceMaterial: "[MESSAGE message-1 role=user]\nold request",
         reason: "auto-pre-request",
       }),
     }));
