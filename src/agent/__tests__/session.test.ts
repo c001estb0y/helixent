@@ -147,4 +147,61 @@ describe("Session", () => {
       metadata: { turnInputKind: "steer" },
     });
   });
+
+  test("installs a compact summary and preserved tail as the active transcript", () => {
+    const eventLog = new MemorySessionEventLog();
+    const session = new Session({ id: "session-1", eventLog });
+    const turn = session.createTurn({ agentId: "agent-1", input: "old request" });
+    session.markTurnRunning(turn.id);
+    session.appendMessageToTurn(turn.id, {
+      role: "assistant",
+      content: [{ type: "text", text: "old answer" }],
+    });
+    const latestUserId = session.appendMessageToTurn(turn.id, {
+      role: "user",
+      content: [{ type: "text", text: "latest request" }],
+    });
+    const assistantId = session.appendMessageToTurn(turn.id, {
+      role: "assistant",
+      content: [{ type: "text", text: "working on it" }],
+    });
+    const preservedTail = [session.getMessage(latestUserId)!, session.getMessage(assistantId)!];
+
+    const summaryMessage = session.installCompactedTranscript({
+      summaryText: "This is background context from transcript compaction, not a new user request.",
+      compactedMessageIds: ["message-1", "message-2"],
+      preservedTailEntries: preservedTail,
+      tokenEstimate: { beforeTokens: 900, afterTokens: 500, triggerTokens: 850, targetTokens: 550 },
+      modelContextWindow: { model: "deepseek-v4-flash", contextWindowTokens: 1_000_000 },
+      reason: "auto-pre-request",
+      turnId: turn.id,
+    });
+
+    expect(summaryMessage).toEqual(expect.objectContaining({
+      id: "message-5",
+      metadata: { synthetic: true, source: "compact" },
+    }));
+    expect(session.messages).toEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "This is background context from transcript compaction, not a new user request." }],
+      },
+      preservedTail[0]!.message,
+      preservedTail[1]!.message,
+    ]);
+    expect(session.transcript.map((entry) => entry.id)).toEqual(["message-5", latestUserId, assistantId]);
+
+    const event = eventLog.events.at(-1);
+    expect(event).toEqual(expect.objectContaining({
+      type: "transcript_compacted",
+      criticality: "session",
+      turnId: turn.id,
+      data: expect.objectContaining({
+        compactedMessageIds: ["message-1", "message-2"],
+        preservedTailMessageIds: [latestUserId, assistantId],
+        replacementMessageIds: ["message-5", latestUserId, assistantId],
+        reason: "auto-pre-request",
+      }),
+    }));
+  });
 });

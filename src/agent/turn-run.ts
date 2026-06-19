@@ -9,9 +9,16 @@ import type {
 
 import type { Agent, AgentContext } from "./agent";
 import type { TurnRunEvent } from "./agent-event";
+import {
+  buildCompactionSummaryRequest,
+  estimateRenderedRequestTokens,
+  resolveKnownModelContextWindow,
+  selectPreservedTail,
+  serializeCompactionSourceMaterial,
+} from "./compaction";
 import { renderModelRequest } from "./prompt-assembly";
-import type { EffectivePromptContext } from "./prompt-context";
-import type { Session, TurnId } from "./session";
+import type { EffectivePromptContext, PromptContextItem } from "./prompt-context";
+import type { Session, SessionMessage, TurnId } from "./session";
 import { formatToolResultForMessage } from "./tool-result-runtime";
 import { captureTurnContext, type TurnContext } from "./turn-context";
 
@@ -38,6 +45,7 @@ export class TurnRun {
   private _agentContext: AgentContext | null = null;
   private _turnContext: TurnContext | null = null;
   private _promptContextSnapshot: EffectivePromptContext | null = null;
+  private _autoCompactFailed = false;
 
   constructor({ session, agent, turnId }: TurnRunOptions) {
     this._session = session;
@@ -143,12 +151,7 @@ export class TurnRun {
     };
     await this._beforeModel(modelContext);
 
-    const assembled = renderModelRequest({
-      agentPrompt: modelContext.prompt,
-      promptContextItems: this._getPromptContextSnapshot().items,
-      turnContext: this._getTurnContext(),
-      transcriptMessages: this._session.messages,
-    });
+    const assembled = await this._assembleRequestAfterOptionalCompaction(modelContext);
     const requestId = this._session.nextRequestId();
     const startedAtMs = Date.now();
     this._recordTrace("model_request", {
@@ -177,6 +180,127 @@ export class TurnRun {
       delete latest.streaming;
     }
     return { assistantMessage: latest, requestId, durationMs: Date.now() - startedAtMs };
+  }
+
+  private async _assembleRequestAfterOptionalCompaction(modelContext: ModelContext) {
+    const promptContextItems = this._getPromptContextSnapshot().items;
+    const turnContext = this._getTurnContext();
+    const assembled = this._assembleRequest(modelContext.prompt, promptContextItems, turnContext);
+    if (this._autoCompactFailed) {
+      return assembled;
+    }
+
+    const modelContextWindow = resolveKnownModelContextWindow(this._agent.model.name);
+    if (!modelContextWindow) {
+      return assembled;
+    }
+
+    const tokenEstimate = estimateRenderedRequestTokens({
+      messages: assembled.messages,
+      tools: modelContext.tools,
+    });
+    const triggerTokens = Math.floor(modelContextWindow.contextWindowTokens * 0.85);
+    if (tokenEstimate.totalTokens < triggerTokens) {
+      return assembled;
+    }
+
+    const targetTokens = Math.floor(modelContextWindow.contextWindowTokens * 0.55);
+    const transcript = this._session.transcript;
+    const tail = selectPreservedTail(transcript, { targetTokens });
+    if (tail.aborted) {
+      this._recordTrace("transcript_compaction_failed", {
+        reason: tail.abortReason,
+        tokenEstimate,
+        modelContextWindow,
+      });
+      this._autoCompactFailed = true;
+      return assembled;
+    }
+
+    const compactedEntries = transcript.filter((entry) => tail.compactedMessageIds.includes(entry.id));
+    if (compactedEntries.length === 0) {
+      return assembled;
+    }
+
+    try {
+      const summaryText = await this._generateCompactionSummary({
+        compactedEntries,
+        compactedInputEstimateTokens: tokenEstimate.totalTokens,
+      });
+      const summaryMessage = [
+        "This is background context from transcript compaction, not a new user request.",
+        "",
+        summaryText,
+      ].join("\n");
+      this._session.installCompactedTranscript({
+        summaryText: summaryMessage,
+        compactedMessageIds: tail.compactedMessageIds,
+        preservedTailEntries: tail.entries,
+        tokenEstimate: {
+          beforeTokens: tokenEstimate.totalTokens,
+          triggerTokens,
+          targetTokens,
+        },
+        modelContextWindow,
+        reason: "auto-pre-request",
+        turnId: this._turnId,
+      });
+      const after = this._assembleRequest(modelContext.prompt, promptContextItems, turnContext);
+      const afterEstimate = estimateRenderedRequestTokens({ messages: after.messages, tools: modelContext.tools });
+      this._recordTrace("transcript_compaction_succeeded", {
+        beforeTokens: tokenEstimate.totalTokens,
+        afterTokens: afterEstimate.totalTokens,
+        modelContextWindow,
+      });
+      return after;
+    } catch (error) {
+      this._autoCompactFailed = true;
+      this._recordTrace("transcript_compaction_failed", {
+        reason: error instanceof Error ? error.message : String(error),
+        tokenEstimate,
+        modelContextWindow,
+      });
+      return assembled;
+    }
+  }
+
+  private _assembleRequest(agentPrompt: string, promptContextItems: PromptContextItem[], turnContext: TurnContext) {
+    return renderModelRequest({
+      agentPrompt,
+      promptContextItems,
+      turnContext,
+      transcriptMessages: this._session.messages,
+    });
+  }
+
+  private async _generateCompactionSummary({
+    compactedEntries,
+    compactedInputEstimateTokens,
+  }: {
+    compactedEntries: SessionMessage[];
+    compactedInputEstimateTokens: number;
+  }) {
+    const sourceMaterial = serializeCompactionSourceMaterial(compactedEntries);
+    const request = buildCompactionSummaryRequest({
+      model: this._agent.model.name,
+      modelOptions: this._agent.model.options,
+      compactedInputEstimateTokens,
+      sourceMaterial,
+      signal: this._abortController.signal,
+    });
+    let latest: AssistantMessage | null = null;
+    for await (const snapshot of this._agent.model.streamRendered(request)) {
+      latest = snapshot;
+    }
+    const text = latest?.content
+      .filter((content) => content.type === "text")
+      .map((content) => content.text)
+      .join("\n")
+      .trim();
+    if (!text) {
+      throw new Error("Compaction summary response did not contain text");
+    }
+    return text;
   }
 
   private _deriveProgress(snapshot: AssistantMessage): TurnRunEvent {
