@@ -1,5 +1,7 @@
 import type { AssistantMessage, NonSystemMessage, ToolUseContent, UserMessage } from "@/foundation";
 
+import { getToolUseSummary } from "./tool-use-summary";
+
 const ESC = "\x1b[";
 const RESET = `${ESC}0m`;
 const BOLD = `${ESC}1m`;
@@ -47,32 +49,8 @@ function assistantMessageText(message: AssistantMessage): string {
 }
 
 function toolUseText(content: ToolUseContent): string {
-  switch (content.name) {
-    case "bash":
-      return `${dim("⏺")} ${content.input.description as string}\n  ${dim(`└─ ${content.input.command as string}`)}`;
-    case "str_replace":
-    case "read_file":
-    case "write_file":
-      return `${dim("⏺")} ${content.input.description as string}\n  ${dim(`└─ ${content.input.path as string}`)}`;
-    case "todo_write":
-      return `${dim("⏺")} Working on todos`;
-    case "ask_user_question": {
-      const qs = (content.input as { questions?: { header?: string }[] }).questions;
-      const n = qs?.length ?? 0;
-      const first = qs?.[0]?.header;
-      return `${dim("⏺")} Ask user${n ? `: ${n} question(s)` : ""}${first ? dim(`\n  └─ ${first}`) : ""}`;
-    }
-    case "list_files":
-      return `${dim("⏺")} ${content.input.description as string}\n  ${dim(`└─ ${content.input.path as string}`)}`;
-    case "glob_search":
-      return `${dim("⏺")} ${content.input.description as string}\n  ${dim(`└─ ${content.input.path as string} :: ${content.input.pattern as string}`)}`;
-    case "grep_search":
-      return `${dim("⏺")} ${content.input.description as string}\n  ${dim(`└─ ${content.input.path as string} :: ${content.input.pattern as string}`)}`;
-    case "apply_patch":
-      return `${dim("⏺")} ${content.input.description as string}\n  ${dim(`└─ unified diff patch`)}`;
-    default:
-      return `${dim("⏺")} Tool call\n  ${dim(`└─ ${content.name}`)}`;
-  }
+  const summary = getToolUseSummary(content);
+  return `${dim("⏺")} ${summary.title}${summary.detail ? `\n  ${dim(`└─ ${summary.detail}`)}` : ""}`;
 }
 
 

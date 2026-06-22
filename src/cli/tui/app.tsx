@@ -1,7 +1,5 @@
-import { Box, useStdout } from "ink";
-import { useEffect, useMemo, useRef } from "react";
-
-import type { NonSystemMessage } from "@/foundation";
+import { Box, Static } from "ink";
+import { useLayoutEffect, useMemo, useState } from "react";
 
 import type { SlashCommand } from "./command-registry";
 import { ApprovalPrompt } from "./components/approval-prompt";
@@ -9,13 +7,13 @@ import { AskUserQuestionPrompt } from "./components/ask-user-question-prompt";
 import { Footer } from "./components/footer";
 import { Header } from "./components/header";
 import { InputBox } from "./components/input-box";
-import { MessageHistoryItem } from "./components/message-history";
+import { MessageHistory, MessageHistoryItem } from "./components/message-history";
 import { StreamingIndicator } from "./components/streaming-indicator";
 import { TodoPanel } from "./components/todo-panel";
 import { useAgentLoop } from "./hooks/use-agent-loop";
 import { useApprovalManager } from "./hooks/use-approval-manager";
 import { useAskUserQuestionManager } from "./hooks/use-ask-user-question-manager";
-import { messageToPlainText } from "./message-text";
+import { nextStaticMessageCount } from "./message-display";
 import { buildTodoViewState, getNextTodo } from "./todo-view";
 
 function allDone(todos?: { status: string }[]) {
@@ -35,25 +33,41 @@ export function App({
   const { latestTodos, todoSnapshots } = useMemo(() => buildTodoViewState(messages), [messages]);
   const nextTodo = getNextTodo(latestTodos)?.content;
   const hideTodos = !streaming && allDone(latestTodos);
+  const [staticMessageCount, setStaticMessageCount] = useState(0);
 
-  const { write } = useStdout();
-  const flushedRef = useRef(0);
+  useLayoutEffect(() => {
+    const nextCount = nextStaticMessageCount({
+      messagesLength: messages.length,
+      previousStaticMessageCount: staticMessageCount,
+      streaming,
+    });
+    if (nextCount !== staticMessageCount) {
+      setStaticMessageCount(nextCount);
+    }
+  }, [messages.length, staticMessageCount, streaming]);
 
-  const lastMessage = messages.length > 0
-    ? messages[messages.length - 1]!
-    : undefined;
-
-  useFlushToScrollback(messages, flushedRef, write);
+  const boundedStaticMessageCount = Math.min(staticMessageCount, messages.length);
+  const staticMessages = messages.slice(0, boundedStaticMessageCount);
+  const liveMessages = messages.slice(boundedStaticMessageCount);
 
   return (
     <Box flexDirection="column" width="100%">
       {messages.length === 0 && <Header />}
-      <Box flexDirection="column" marginTop={1} rowGap={1}>
-        {lastMessage && (
+      <Static items={staticMessages}>
+        {(message, index) => (
           <MessageHistoryItem
-            key={`msg:${lastMessage.role}:${messages.length - 1}`}
-            message={lastMessage}
-            messageIndex={messages.length - 1}
+            key={`static:${index}`}
+            message={message}
+            messageIndex={index}
+            todoSnapshots={todoSnapshots}
+          />
+        )}
+      </Static>
+      <Box flexDirection="column" marginTop={1} rowGap={1}>
+        {liveMessages.length > 0 && (
+          <MessageHistory
+            messages={liveMessages}
+            startIndex={boundedStaticMessageCount}
             todoSnapshots={todoSnapshots}
           />
         )}
@@ -79,25 +93,4 @@ export function App({
       <Footer />
     </Box>
   );
-}
-
-function useFlushToScrollback(
-  messages: NonSystemMessage[],
-  flushedRef: React.MutableRefObject<number>,
-  // eslint-disable-next-line no-unused-vars
-  write: (data: string) => void,
-) {
-  useEffect(() => {
-    const targetCount = messages.length > 0 ? messages.length - 1 : 0;
-    if (targetCount <= flushedRef.current) return;
-
-    const toFlush = messages.slice(flushedRef.current, targetCount);
-    for (const msg of toFlush) {
-      const text = messageToPlainText(msg);
-      if (text) {
-        write(text + "\n");
-      }
-    }
-    flushedRef.current = targetCount;
-  }, [messages, write, flushedRef]);
 }

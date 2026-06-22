@@ -5,6 +5,7 @@ import type { AssistantMessage, NonSystemMessage, ToolUseContent, UserMessage } 
 
 import { currentTheme } from "../themes";
 import { getCurrentTodo, getNextTodo, snapshotKey, type TodoItemView } from "../todo-view";
+import { getToolUseSummary, type ToolUseSummary } from "../tool-use-summary";
 
 import { Markdown } from "./markdown";
 
@@ -116,72 +117,23 @@ const ToolUseContentItem = memo(function ToolUseContentItem({
   content: ToolUseContent;
   todos?: TodoItemView[];
 }) {
+  const summary = getToolUseSummary(content);
+
   switch (content.name) {
     case "bash":
-      return (
-        <Box flexDirection="column">
-          <Text>{content.input.description as string}</Text>
-          <Text color={currentTheme.colors.dimText}>└─ {content.input.command as string}</Text>
-        </Box>
-      );
     case "str_replace":
     case "read_file":
     case "write_file":
     case "list_files":
     case "file_info":
     case "mkdir":
-      return (
-        <Box flexDirection="column">
-          <Text>{content.input.description as string}</Text>
-          <Text color={currentTheme.colors.dimText}>└─ {content.input.path as string}</Text>
-        </Box>
-      );
     case "glob_search":
-      return (
-        <Box flexDirection="column">
-          <Text>{content.input.description as string}</Text>
-          <Text color={currentTheme.colors.dimText}>
-            └─ {(content.input.path as string) + " :: " + (content.input.pattern as string)}
-          </Text>
-        </Box>
-      );
     case "grep_search":
-      return (
-        <Box flexDirection="column">
-          <Text>{content.input.description as string}</Text>
-          <Text color={currentTheme.colors.dimText}>
-            └─ {(content.input.path as string) + " :: " + (content.input.pattern as string)}
-          </Text>
-        </Box>
-      );
     case "move_path":
-      return (
-        <Box flexDirection="column">
-          <Text>{content.input.description as string}</Text>
-          <Text color={currentTheme.colors.dimText}>
-            └─ {(content.input.from as string) + " -> " + (content.input.to as string)}
-          </Text>
-        </Box>
-      );
     case "apply_patch":
-      return (
-        <Box flexDirection="column">
-          <Text>{content.input.description as string}</Text>
-          <Text color={currentTheme.colors.dimText}>└─ unified diff patch</Text>
-        </Box>
-      );
+      return <SummaryView summary={summary} />;
     case "ask_user_question": {
-      const qs = (content.input as { questions?: { header?: string }[] }).questions;
-      const n = qs?.length ?? 0;
-      const first = qs?.[0]?.header;
-      return (
-        <Box flexDirection="column">
-          <Text>
-            Ask user{n ? `: ${n} question(s)` : ""}
-            {first ? ` — ${first}` : ""}
-          </Text>
-        </Box>
-      );
+      return <SummaryView summary={summary} />;
     }
     case "todo_write": {
       const visibleTodos = todos;
@@ -203,14 +155,18 @@ const ToolUseContentItem = memo(function ToolUseContentItem({
       );
     }
     default:
-      return (
-        <Box flexDirection="column">
-          <Text>Tool call</Text>
-          <Text color={currentTheme.colors.dimText}>└─ {content.name}</Text>
-        </Box>
-      );
+      return <SummaryView summary={summary} />;
   }
 });
+
+function SummaryView({ summary }: { summary: ToolUseSummary }) {
+  return (
+    <Box flexDirection="column">
+      <Text>{summary.title}</Text>
+      {summary.detail ? <Text color={currentTheme.colors.dimText}>└─ {summary.detail}</Text> : null}
+    </Box>
+  );
+}
 
 
 function getMessageKey(message: NonSystemMessage, index: number) {
