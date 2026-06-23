@@ -3,6 +3,7 @@ import type {
   ModelContext,
   NonSystemMessage,
   RenderedModelRequest,
+  Tool,
   ToolMessage,
   ToolUseContent,
 } from "@/foundation";
@@ -19,6 +20,7 @@ import {
 import { renderModelRequest } from "./prompt-assembly";
 import type { EffectivePromptContext, PromptContextItem } from "./prompt-context";
 import type { Session, SessionMessage, TurnId } from "./session";
+import type { RenderedToolSchema } from "./session-event-log";
 import { formatToolResultForMessage } from "./tool-result-runtime";
 import { captureTurnContext, type TurnContext } from "./turn-context";
 
@@ -154,10 +156,6 @@ export class TurnRun {
     const assembled = await this._assembleRequestAfterOptionalCompaction(modelContext);
     const requestId = this._session.nextRequestId();
     const startedAtMs = Date.now();
-    this._recordTrace("model_request", {
-      stepIndex: step - 1,
-      renderedMessages: assembled.renderedMessages,
-    }, { requestId });
     const renderedRequest: RenderedModelRequest = {
       model: this._agent.model.name,
       options: this._agent.model.options,
@@ -165,6 +163,13 @@ export class TurnRun {
       tools: modelContext.tools,
       signal: modelContext.signal,
     };
+    this._recordTrace("model_request", {
+      model: renderedRequest.model,
+      ...(renderedRequest.options ? { modelOptions: renderedRequest.options } : {}),
+      stepIndex: step - 1,
+      renderedMessages: assembled.renderedMessages,
+      renderedTools: renderToolSchemas(renderedRequest.tools ?? []),
+    }, { requestId });
 
     let latest: AssistantMessage | null = null;
     for await (const snapshot of this._agent.model.streamRendered(renderedRequest)) {
@@ -542,6 +547,14 @@ export class TurnRun {
       }
     }
   }
+}
+
+function renderToolSchemas(tools: Tool[]): RenderedToolSchema[] {
+  return tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters.toJSONSchema(),
+  }));
 }
 
 function abortReason(reason: unknown) {

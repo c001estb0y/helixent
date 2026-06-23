@@ -168,7 +168,7 @@ describe("AgentRunner", () => {
     });
     const agent = new Agent({
       id: "agent-1",
-      model: new Model("fake-model", provider),
+      model: new Model("fake-model", provider, { max_tokens: 1000 }),
       prompt: "Use tools.",
       tools: [tool],
     });
@@ -205,13 +205,25 @@ describe("AgentRunner", () => {
     });
     const modelRequest = traceEvents.find((event) => event.type === "model_request")!;
     expect(modelRequest.requestId).toBe("request-1");
-    expect(modelRequest.data).toEqual({
+    expect(modelRequest.data).toEqual(expect.objectContaining({
+      model: "fake-model",
+      modelOptions: { max_tokens: 1000 },
       stepIndex: 0,
       renderedMessages: expect.arrayContaining([
         expect.objectContaining({ source: "prompt_context", sourceItemIds: ["context-1"] }),
         expect.objectContaining({ source: "turn_context", cacheSegment: "volatile" }),
       ]),
-    });
+      renderedTools: expect.arrayContaining([
+        expect.objectContaining({
+          name: "echo_tool",
+          description: "Echo tool",
+          parameters: expect.objectContaining({
+            type: "object",
+            required: ["value"],
+          }),
+        }),
+      ]),
+    }));
     const modelResponses = traceEvents.filter((event) => event.type === "model_response");
     expect(modelResponses[0]?.data).toEqual({
       assistantMessageId: "message-2",

@@ -13,7 +13,7 @@ model_request
 ```text
 turn_context_snapshot   = 这次 run 的执行环境事实
 prompt_context_snapshot = 这次 run 冻结使用的指令上下文
-model_request           = 某一次模型请求最终渲染出的 message list
+model_request           = 某一次模型请求最终渲染出的 provider-neutral request snapshot
 ```
 
 ## 场景
@@ -142,6 +142,8 @@ global 指令和 project 指令谁排在前面？
   "turnId": "turn-001",
   "runId": "run-001",
   "requestId": "request-001",
+  "model": "gpt-5",
+  "modelOptions": { "max_tokens": 8192 },
   "stepIndex": 0,
   "renderedMessages": [
     {
@@ -165,6 +167,19 @@ global 指令和 project 指令谁排在前面？
       "content": "帮我实现日期功能",
       "source": "transcript",
       "messageId": "message-001"
+    }
+  ],
+  "renderedTools": [
+    {
+      "name": "read_file",
+      "description": "Read a file from an absolute path. Supports optional line-range reads for large files.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" }
+        },
+        "required": ["path"]
+      }
     }
   ]
 }
@@ -193,7 +208,7 @@ run-001
   model_request request-002 stepIndex=1
 ```
 
-`model_request` 是 request 级 record。ReAct loop 每多走一步，transcript 里可能多出 assistant/tool_result 消息，所以每次模型请求都要保存自己的 `renderedMessages`。
+`model_request` 是 request 级 record。ReAct loop 每多走一步，transcript 里可能多出 assistant/tool_result 消息，所以每次模型请求都要保存自己的 `model`、`modelOptions`、`renderedMessages` 和 `renderedTools`。
 
 ## 和 Transcript 的区别
 

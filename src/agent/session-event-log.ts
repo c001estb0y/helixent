@@ -24,6 +24,20 @@ export interface SessionEventEnvelope<TType extends string = string, TData = unk
   data: TData;
 }
 
+export interface RenderedToolSchema {
+  name: string;
+  description: string;
+  parameters: unknown;
+}
+
+export interface ModelRequestTraceData {
+  model: string;
+  modelOptions?: Record<string, unknown>;
+  stepIndex: number;
+  renderedMessages: RenderedPromptMessage[];
+  renderedTools: RenderedToolSchema[];
+}
+
 export interface SessionEventLog {
   write<TType extends string, TData>(
     // eslint-disable-next-line no-unused-vars
@@ -112,7 +126,7 @@ export type SessionTraceEvent =
   | SessionEventEnvelope<"turn_run_started", Record<string, never>>
   | SessionEventEnvelope<"turn_context_snapshot", { turnContext: TurnContext }>
   | SessionEventEnvelope<"prompt_context_snapshot", { promptContext: EffectivePromptContext }>
-  | SessionEventEnvelope<"model_request", { stepIndex: number; renderedMessages: RenderedPromptMessage[] }>
+  | SessionEventEnvelope<"model_request", ModelRequestTraceData>
   | SessionEventEnvelope<
       "model_response",
       {

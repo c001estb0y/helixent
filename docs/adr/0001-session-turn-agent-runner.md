@@ -316,7 +316,7 @@ Always-on trace should include:
 
 - `TurnContext` snapshot;
 - full typed `PromptContext` snapshot content, source metadata, item hashes, and aggregate hash;
-- full rendered provider-neutral message snapshots for each model request;
+- full provider-neutral request snapshots for each model request, including model name, model options, rendered messages, and rendered tool schemas;
 - request ID, run ID, turn ID, step index, timing, usage, and error metadata.
 
 Verbose trace may include heavier or more sensitive evidence:
@@ -329,7 +329,7 @@ For example, if a user later asks why a previous run thought the current date wa
 
 Prompt context snapshots should store full typed item content by default. Do not persist only `sourcePath` plus `contentHash`, because that makes replay and debugging depend on mutable files outside the trace. Phase 1 does not add truncation or sensitive-content redaction policy for prompt context snapshots; those can be designed later as trace retention controls.
 
-Rendered message snapshots should also store full provider-neutral message content by default. The trace must preserve role, ordering, wrapper text, content parts, and source mappings for each model request. Persisting only rendered hashes would leave the trace unable to explain what Helixent actually sent after prompt assembly. Provider-specific `providerRawRequest` remains optional or verbose evidence because it may duplicate rendered content while adding adapter/provider details.
+Rendered request snapshots should also store full provider-neutral request content by default. The trace must preserve model name, model options, rendered tool schemas, rendered message roles, ordering, wrapper text, content parts, and source mappings for each model request. Persisting only rendered hashes would leave the trace unable to explain what Helixent actually sent after prompt assembly. Provider-specific `providerRawRequest` remains optional or verbose evidence because it may duplicate rendered content while adding adapter/provider details.
 
 Phase 1 should store all session persistence as one session-level JSONL event stream, not separate session and trace files. A single event file contains records for transcript messages, session-state changes, turn runs, interrupted-turn continuations, and model requests in that session timeline. Each record carries the IDs needed to select the desired projection and granularity.
 
@@ -371,7 +371,7 @@ Example records:
 ```jsonl
 {"eventId":"evt-3","type":"turn_run_started","sessionId":"s1","timestamp":"2026-06-11T07:00:01.000Z","criticality":"trace","turnId":"t1","runId":"r1","data":{}}
 {"eventId":"evt-4","type":"turn_context_snapshot","sessionId":"s1","timestamp":"2026-06-11T07:00:01.000Z","criticality":"trace","turnId":"t1","runId":"r1","data":{"turnContext":{"currentDate":"2026-06-11","timezone":"Asia/Shanghai","cwd":"E:\\Github\\helixent\\helixent","model":"gpt-5"}}}
-{"eventId":"evt-5","type":"model_request","sessionId":"s1","timestamp":"2026-06-11T07:00:02.000Z","criticality":"trace","turnId":"t1","runId":"r1","requestId":"req1","data":{"stepIndex":0,"renderedMessages":[]}}
+{"eventId":"evt-5","type":"model_request","sessionId":"s1","timestamp":"2026-06-11T07:00:02.000Z","criticality":"trace","turnId":"t1","runId":"r1","requestId":"req1","data":{"model":"gpt-5","modelOptions":{"max_tokens":8192},"stepIndex":0,"renderedMessages":[],"renderedTools":[]}}
 {"eventId":"evt-6","type":"turn_run_completed","sessionId":"s1","timestamp":"2026-06-11T07:00:03.000Z","criticality":"trace","turnId":"t1","runId":"r1","data":{}}
 ```
 
@@ -399,7 +399,7 @@ Responsibilities:
 
 - `turn_context_snapshot` persists the full `TurnContext` for one run: `currentDate`, `timezone`, `cwd`, and `model`.
 - `prompt_context_snapshot` persists full typed prompt context items, source metadata, item hashes, and aggregate hash.
-- `model_request` persists full provider-neutral rendered messages for one model request, plus `requestId`, `runId`, `turnId`, and `stepIndex`.
+- `model_request` persists the full provider-neutral request snapshot for one model request: `model`, `modelOptions`, `renderedMessages`, `renderedTools`, plus envelope-level `requestId`, `runId`, `turnId`, and request-level `stepIndex`.
 - `model_response` records response metadata and links to appended transcript messages where applicable. It should not duplicate the full assistant message content already available from `message_appended` events.
 - `tool_started` and `tool_finished` record tool execution evidence and link to the corresponding tool use/result IDs. `tool_finished` should not duplicate tool result message content already available from `message_appended` events.
 - `turn_run_completed` and `turn_run_failed` close the run timeline.
@@ -519,13 +519,16 @@ interface TurnRunTraceRecord {
 interface ModelRequestRecord {
   requestId: string;
   runId: string;
+  model: string;
+  modelOptions?: Record<string, unknown>;
   stepIndex: number;
   renderedMessages: RenderedPromptMessage[];
+  renderedTools: RenderedToolSchema[];
   providerRawRequest?: unknown;
 }
 ```
 
-This keeps stable/shared context facts from being duplicated on every model request while still preserving the exact rendered messages that caused each model response.
+This keeps stable/shared context facts from being duplicated on every model request while still preserving the exact provider-neutral request shape that caused each model response.
 
 The runtime execution objects (`AgentRunner`, `TurnRun`, `AgentRunContext`) are not themselves the trace system. They may emit or hand off evidence to a trace writer, but the trace remains a separate record keyed by shared IDs such as `sessionId`, `turnId`, `runId`, `messageId`, and `toolUseId`.
 
@@ -561,7 +564,7 @@ Responsibilities:
 - `Model` owns provider invocation and provider adapter lowering;
 - provider adapters own provider-specific role mapping, content-part lowering, tool schema placement, cache-control annotations, and optional `providerRawRequest` evidence.
 
-This is intentionally stronger than the current implementation, where `Model._buildModelProviderParams(...)` privately assembles messages from `prompt`, `contextBlocks`, and `messages`. Keeping assembly private inside `Model` prevents `TurnRun` from recording the full rendered messages before the provider request. Moving assembly into `TurnRun` directly would make the agent layer know too much about model request construction. A shared provider-neutral assembler keeps the responsibilities explicit.
+This is intentionally stronger than the current implementation, where `Model._buildModelProviderParams(...)` privately assembles messages from `prompt`, `contextBlocks`, and `messages`. Keeping assembly private inside `Model` prevents `TurnRun` from recording the full rendered request before the provider request. Moving assembly into `TurnRun` directly would make the agent layer know too much about model request construction. A shared provider-neutral assembler keeps the responsibilities explicit.
 
 The execution path should become:
 
@@ -571,7 +574,7 @@ TurnRun
   freezes PromptContext snapshot
   applies middleware ModelContext patches
   calls renderModelRequest(...)
-  writes model_request trace with full renderedMessages
+  writes model_request trace with model, options, renderedMessages, and renderedTools
   calls Model with rendered provider-neutral request
 
 Model
@@ -598,7 +601,7 @@ model.invokeRendered(request: RenderedModelRequest);
 model.streamRendered(request: RenderedModelRequest);
 ```
 
-Do not have both `TurnRun` and `Model` independently render messages. Double rendering risks trace drift, where the recorded `renderedMessages` differ from the request actually sent to the provider. If a convenience API is reintroduced later, it must delegate through the same prompt assembler and expose the rendered request for trace before invocation.
+Do not have both `TurnRun` and `Model` independently render messages or tool schemas. Double rendering risks trace drift, where the recorded `renderedMessages` or `renderedTools` differ from the request actually sent to the provider. If a convenience API is reintroduced later, it must delegate through the same prompt assembler and expose the rendered request for trace before invocation.
 
 Prompt layer meanings:
 
