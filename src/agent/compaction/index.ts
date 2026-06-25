@@ -1,4 +1,4 @@
-import type { Message, RenderedModelRequest, Tool } from "@/foundation";
+import { type Message, type RenderedModelRequest, type Tool, toolParametersToJsonSchema } from "@/foundation";
 
 import type { SessionMessage } from "../session";
 
@@ -139,7 +139,7 @@ function toolSchemaPayloads(tools: Tool[]) {
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    parameters: tool.parameters.toJSONSchema(),
+    parameters: toolParametersToJsonSchema(tool.parameters),
   }));
 }
 

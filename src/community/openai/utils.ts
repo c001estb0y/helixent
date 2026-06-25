@@ -1,6 +1,6 @@
 import type { ChatCompletionContentPart, ChatCompletionTool } from "openai/resources";
 
-import type { AssistantMessage, Message, TokenUsage, Tool } from "@/foundation";
+import { type AssistantMessage, type Message, type TokenUsage, type Tool, toolParametersToJsonSchema } from "@/foundation";
 
 import type {
   OpenAIAssistantMessageParam,
@@ -102,6 +102,6 @@ export function parseAssistantMessage(message: OpenAIChatCompletionMessage, usag
 export function convertToOpenAITools(tools: Tool[]): ChatCompletionTool[] {
   return tools.map((tool) => ({
     type: "function",
-    function: { name: tool.name, description: tool.description, parameters: tool.parameters.toJSONSchema() },
+    function: { name: tool.name, description: tool.description, parameters: toolParametersToJsonSchema(tool.parameters) },
   }));
 }

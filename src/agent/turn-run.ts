@@ -7,6 +7,7 @@ import type {
   ToolMessage,
   ToolUseContent,
 } from "@/foundation";
+import { toolParametersToJsonSchema } from "@/foundation";
 
 import type { Agent, AgentContext } from "./agent";
 import type { TurnRunEvent } from "./agent-event";
@@ -553,7 +554,7 @@ function renderToolSchemas(tools: Tool[]): RenderedToolSchema[] {
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    parameters: tool.parameters.toJSONSchema(),
+    parameters: toolParametersToJsonSchema(tool.parameters),
   }));
 }
 

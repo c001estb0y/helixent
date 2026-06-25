@@ -168,6 +168,98 @@ _Avoid_: always-on trace
 A trace projection organized around one session timeline, with run and request records inside it.
 _Avoid_: per-run physical file
 
+**MCP host**:
+The Helixent-side participant that connects to external MCP servers and exposes their capabilities to an agent.
+_Avoid_: MCP server, provider adapter
+
+**MCP server**:
+An external capability provider that publishes tools, resources, or prompts over the Model Context Protocol.
+_Avoid_: MCP host, model provider
+
+**MCP transport**:
+The communication channel used between an MCP host and an MCP server.
+_Avoid_: tool schema, model provider
+
+**MCP server configuration**:
+The `mcpServers` configuration entry that tells Helixent how to connect to an MCP server.
+_Avoid_: MCP tool schema, Agent configuration
+
+**MCP stdio environment**:
+The environment variables Helixent passes to a stdio MCP server process.
+_Avoid_: host process environment, provider credentials
+
+**MCP server instructions**:
+Optional server-level guidance returned by MCP initialize.
+_Avoid_: tool description, Helixent instruction context
+
+**MCP remote authentication**:
+Static request headers and environment-derived headers used by remote MCP transports.
+_Avoid_: OAuth flow, browser login
+
+**MCP environment header**:
+A remote MCP request header whose value is resolved from an environment variable at runtime.
+_Avoid_: string interpolation, checked-in secret
+
+**Streamable HTTP MCP transport**:
+The HTTP-based MCP transport selected by `streamable_http` configuration.
+_Avoid_: https transport, SSE transport
+
+**MCP-discovered tool**:
+A tool definition learned from an MCP server and made available through Helixent's tool system.
+_Avoid_: built-in coding tool, provider function
+
+**MCP tool support**:
+Helixent's MCP host capability for discovering and calling MCP server tools.
+_Avoid_: MCP resource support, MCP prompt support
+
+**MCP connection manager**:
+The app-runtime owner of live MCP server connections and their discovered capabilities.
+_Avoid_: agent state, session state
+
+**MCP tool registry**:
+The local projection of tool definitions discovered from connected MCP servers.
+_Avoid_: remote tool list, agent tools
+
+**MCP tool snapshot**:
+The current local set of model-visible tool definitions for one connected MCP server.
+_Avoid_: remote tool list, tool cache generation
+
+**Effective tool set**:
+The model-visible tools assembled for one model request from agent-configured tools and current MCP tool snapshots.
+_Avoid_: agent tools, MCP registry
+
+**MCP tool binding**:
+The mapping from a Helixent-visible MCP tool name to the original MCP server name and tool name.
+_Avoid_: parsed tool name, inferred server name
+
+**MCP tool display**:
+The generic UI rendering of an MCP tool call using its server name, original tool name, and argument preview.
+_Avoid_: sanitized tool name as display truth
+
+**MCP tool approval policy**:
+The rule that decides whether an MCP-discovered tool may run automatically or must ask the user first.
+_Avoid_: transport trust, server capability
+
+**MCP tool call scheduling**:
+The ordering policy Helixent applies when executing MCP-discovered tools against a server.
+_Avoid_: agent parallelism, model tool choice
+
+**Required MCP server**:
+An MCP server whose connection failure should prevent starting agent execution.
+_Avoid_: trusted server, built-in tool
+
+**Transient MCP disconnect**:
+An unexpected MCP transport loss where Helixent hides the server's tools without treating the server as manually disabled.
+_Avoid_: manual close, tool-list change
+
+**Tool parameter schema**:
+The provider-neutral description of a tool's accepted input shape, sourced from either Zod or JSON Schema.
+_Avoid_: Zod-only parameters, provider tool schema
+
+**MCP schema sanitizer**:
+The minimal cleanup step that turns external MCP tool schemas into provider-safe tool parameter schemas.
+_Avoid_: JSON Schema validator, schema compiler
+
 ## Relationships
 
 - An **Agent prompt** is agent-owned; **Instruction context** is user- or project-owned.
@@ -203,6 +295,41 @@ _Avoid_: per-run physical file
 - A **Session-level trace** may contain many turn runs and model requests, each distinguished by IDs.
 - A **Trace record** is not a **Transcript** message, even when it references a transcript `messageId`.
 - **Trace incomplete** is acceptable when trace-only records are damaged; it must not be confused with damaged session-state records.
+- An **MCP host** connects to one or more **MCP servers** through **MCP transports**.
+- An **MCP server** may publish one or more **MCP-discovered tools**.
+- An **MCP-discovered tool** is an agent capability, but its invocation evidence belongs in the **Transcript** and **Trace** like any other tool use.
+- Helixent MCP host support includes `stdio`, `streamable_http`, and `sse` **MCP transports**.
+- A **Streamable HTTP MCP transport** may use an `https://` URL, but `https` is not the transport name.
+- **MCP server configuration** lives under the `mcpServers` top-level configuration field.
+- **MCP server configuration** changes take effect on the next Helixent start in the MVP.
+- **MCP stdio environment** defaults to a minimal safe environment plus configured variables; full host environment inheritance requires explicit configuration.
+- **MCP server instructions** are recorded as server metadata in the MVP, but they are not injected into model context or tool descriptions.
+- **MCP remote authentication** in the MVP does not include OAuth, browser login, or token refresh.
+- **MCP environment headers** are configured explicitly; Helixent does not use `${ENV}` string interpolation for MCP headers.
+- An **MCP connection manager** is outside **Agent** and **Session** ownership; it supplies **MCP-discovered tools** to agent capability assembly.
+- An **MCP connection manager** updates the **MCP tool registry** after connection-time discovery or a server tool-list change.
+- An **MCP tool registry** contains one **MCP tool snapshot** per connected **MCP server**.
+- **MCP tool support** in the MVP covers tools only; MCP resources and prompts are outside the MVP.
+- A server tool-list change triggers an asynchronous **MCP tool snapshot** refresh; refresh failures keep the previous snapshot.
+- An **Effective tool set** is assembled at model-request time; it does not mutate the **Agent**.
+- **Agent** tools are configuration, while **MCP tool snapshots** are app-runtime state.
+- An **MCP connection manager** is passed into turn execution as a runtime dependency, not stored on **Agent** or **Session**.
+- An **MCP-discovered tool** uses an **MCP tool binding** to call its original **MCP server** tool; Helixent must not infer that binding by parsing the model-visible tool name.
+- **MCP tool display** uses **MCP tool binding** metadata when available and falls back to the Helixent-visible tool name.
+- An **MCP tool approval policy** defaults to requiring approval unless server or tool configuration explicitly allows automatic execution.
+- **MCP tool call scheduling** is serial per server by default, with explicit per-server opt-in for parallel calls.
+- MCP integration code belongs in `community/mcp`; Foundation only owns provider-neutral tool schema concepts.
+- A failed optional **MCP server** contributes no **MCP tool snapshot**; a failed **Required MCP server** prevents agent execution from starting.
+- Closing or disabling an **MCP server** clears its **MCP tool snapshot**, removing its schemas from subsequent **Effective tool sets**.
+- A **Transient MCP disconnect** hides the server's **MCP tool snapshot** from subsequent **Effective tool sets** but does not mean the user disabled the server.
+- A **Transient MCP disconnect** on a remote MCP transport may trigger limited automatic reconnect; stdio servers are not automatically restarted in the MVP.
+- Each model request receives a freshly assembled **Effective tool set** from **Agent** tools and current **MCP tool snapshots**.
+- A **Tool parameter schema** may originate from Zod for built-in tools or JSON Schema for **MCP-discovered tools**.
+- Provider adapters render every **Tool parameter schema** as JSON Schema for model requests.
+- An **MCP schema sanitizer** is used for external MCP tool schemas in the MVP, but it is not a full JSON Schema validator or compiler.
+- **MCP-discovered tool** arguments are validated by the owning **MCP server** in the MVP; Helixent only ensures the call targets a known **MCP tool binding**.
+- **MCP-discovered tool** results are normalized into Helixent structured tool results before becoming **Transcript** tool results.
+- Non-text MCP tool result content is retained in structured result data while the **Transcript** tool result receives a textual placeholder in the MVP.
 
 ## Example dialogue
 
@@ -216,3 +343,6 @@ _Avoid_: per-run physical file
 - `AGENTS.md` can exist at user and project scopes. Both are **Instruction context**, not **Agent prompt**.
 - Local override files are **Local project instructions**, not a general license to replace every broader instruction.
 - `currentDate` belongs to **Turn context**, not **Instruction context** or **Transcript**.
+- "MCP support" can mean implementing an **MCP host** or exposing Helixent as an **MCP server**; resolved: the current plan is host support first, with external servers as capability providers.
+- "https MCP" should be called **Streamable HTTP MCP transport** when referring to the MCP transport; `https://` is only the URL scheme.
+- "dirty" for MCP tools means an **MCP tool snapshot** needs refresh; do not imply a cache generation unless cache invalidation is explicitly being designed.

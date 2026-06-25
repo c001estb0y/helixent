@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 
-import type { AssistantMessage, Message, TokenUsage, Tool } from "@/foundation";
+import { type AssistantMessage, type Message, type TokenUsage, type Tool, toolParametersToJsonSchema } from "@/foundation";
 
 /**
  * Extracts the system prompt from helixent messages.
@@ -154,6 +154,6 @@ export function convertToAnthropicTools(tools: Tool[]): Anthropic.Tool[] {
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    input_schema: tool.parameters.toJSONSchema() as Anthropic.Tool["input_schema"],
+    input_schema: toolParametersToJsonSchema(tool.parameters) as Anthropic.Tool["input_schema"],
   }));
 }

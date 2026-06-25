@@ -205,6 +205,36 @@ describe("convertToOpenAITools", () => {
     });
   });
 
+  test("converts a JSON-schema-backed tool to OpenAI format", () => {
+    const tools = [
+      {
+        name: "mcp_memory_search",
+        description: "Search memory",
+        parameters: {
+          kind: "json-schema",
+          jsonSchema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+          },
+        },
+        invoke: async () => undefined,
+      },
+    ];
+    const result = convertToOpenAITools(tools as never);
+    expect(result[0]).toMatchObject({
+      type: "function",
+      function: {
+        name: "mcp_memory_search",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string" } },
+          required: ["query"],
+        },
+      },
+    });
+  });
+
   test("returns empty array for no tools", () => {
     expect(convertToOpenAITools([] as never)).toEqual([]);
   });

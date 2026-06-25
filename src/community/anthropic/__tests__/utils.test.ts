@@ -222,6 +222,33 @@ describe("convertToAnthropicTools", () => {
     });
   });
 
+  test("converts a JSON-schema-backed tool to Anthropic format", () => {
+    const tools = [
+      {
+        name: "mcp_memory_search",
+        description: "Search memory",
+        parameters: {
+          kind: "json-schema",
+          jsonSchema: {
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+          },
+        },
+        invoke: async () => undefined,
+      },
+    ];
+    const result = convertToAnthropicTools(tools as never);
+    expect(result[0]).toMatchObject({
+      name: "mcp_memory_search",
+      input_schema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+      },
+    });
+  });
+
   test("returns empty array for no tools", () => {
     expect(convertToAnthropicTools([] as never)).toEqual([]);
   });

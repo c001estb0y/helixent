@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { Message, Tool } from "@/foundation";
+import { type Message, type Tool, toolParametersToJsonSchema } from "@/foundation";
 
 import {
   buildCompactionSummaryRequest,
@@ -266,6 +266,6 @@ function toolSchemaPayloads(tools: Tool[]) {
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    parameters: tool.parameters.toJSONSchema(),
+    parameters: toolParametersToJsonSchema(tool.parameters),
   }));
 }
