@@ -9,6 +9,9 @@ const emptyAllowList = async (): Promise<Set<string>> => new Set();
 export function createCodingApprovalMiddleware(options: {
   cwd: string;
   requiresApproval: string[];
+  /** Dynamic predicate for tools whose approval requirement is not statically known (e.g. MCP tools). */
+  // eslint-disable-next-line no-unused-vars
+  requiresApprovalFor?: (toolName: string) => boolean;
   approvalPersistence?: ApprovalPersistence;
   // eslint-disable-next-line no-unused-vars
   askUser: (toolUse: ToolUseContent) => Promise<ApprovalDecision>;
@@ -18,7 +21,9 @@ export function createCodingApprovalMiddleware(options: {
 
   return {
     beforeToolUse: async ({ toolUse }) => {
-      if (!options.requiresApproval.includes(toolUse.name)) {
+      const needsApproval =
+        options.requiresApproval.includes(toolUse.name) || (options.requiresApprovalFor?.(toolUse.name) ?? false);
+      if (!needsApproval) {
         return;
       }
       const allowed = await loadAllowList(options.cwd);

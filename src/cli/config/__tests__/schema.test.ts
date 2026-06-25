@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { helixentConfigSchema, modelEntrySchema } from "../schema";
+import { helixentConfigSchema, mcpServerSchema, modelEntrySchema } from "../schema";
 
 describe("modelEntrySchema", () => {
   test("accepts valid model entry with required fields", () => {
@@ -130,6 +130,60 @@ describe("helixentConfigSchema", () => {
         { name: "claude-3", baseURL: "https://api.anthropic.com", APIKey: "sk-ant-xxx", provider: "anthropic" },
       ],
       defaultModel: "claude-3",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts config with mcpServers", () => {
+    const result = helixentConfigSchema.safeParse({
+      models: [{ name: "gpt-4", baseURL: "https://api.openai.com/v1", APIKey: "sk-xxx" }],
+      mcpServers: {
+        "agent-memory": { command: "bunx", args: ["agent-memory"], autoApprove: true },
+        remote: { type: "streamable_http", url: "https://example.com/mcp" },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("mcpServerSchema", () => {
+  test("accepts a stdio server with default type", () => {
+    const result = mcpServerSchema.safeParse({ command: "bunx", args: ["agent-memory"] });
+    expect(result.success).toBe(true);
+  });
+
+  test("rejects a stdio server without a command", () => {
+    const result = mcpServerSchema.safeParse({ type: "stdio", args: ["x"] });
+    expect(result.success).toBe(false);
+  });
+
+  test("accepts a streamable_http server", () => {
+    const result = mcpServerSchema.safeParse({
+      type: "streamable_http",
+      url: "https://example.com/mcp",
+      headers: { "X-Key": "1" },
+      envHeaders: { Authorization: "TOKEN" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  test("accepts an sse server", () => {
+    const result = mcpServerSchema.safeParse({ type: "sse", url: "https://example.com/sse" });
+    expect(result.success).toBe(true);
+  });
+
+  test("rejects a remote server without a url", () => {
+    const result = mcpServerSchema.safeParse({ type: "sse" });
+    expect(result.success).toBe(false);
+  });
+
+  test("accepts policy fields", () => {
+    const result = mcpServerSchema.safeParse({
+      command: "x",
+      enabled: false,
+      required: true,
+      allowParallel: true,
+      autoApprove: ["search"],
     });
     expect(result.success).toBe(true);
   });

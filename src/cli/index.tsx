@@ -6,12 +6,14 @@ import { render } from "ink";
 import { validateIntegrity } from "@/cli/bootstrap";
 import { registerCommands } from "@/cli/commands";
 import { loadConfig } from "@/cli/config";
+import { createMcpManagerFromConfig } from "@/cli/mcp/manager-factory";
 import { SettingsLoader, SettingsWriter } from "@/cli/settings";
 import { createCodingAgent, createCodingSession, globalApprovalManager, globalAskUserQuestionManager } from "@/coding";
 import { AnthropicModelProvider } from "@/community/anthropic";
 import { OpenAIModelProvider } from "@/community/openai";
 import type { ModelProvider } from "@/foundation";
 import { Model } from "@/foundation";
+
 
 import { App } from "./tui";
 import { loadAvailableCommands, type SlashCommand } from "./tui/command-registry";
@@ -69,6 +71,25 @@ if (args.length > 0) {
     "~/.helixent/skills",
   ];
 
+  const mcpManager = createMcpManagerFromConfig(config.mcpServers);
+  if (mcpManager) {
+    try {
+      await mcpManager.connect();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[helixent] MCP startup failed: ${message}`);
+      process.exit(1);
+    }
+    const closeMcp = () => {
+      void mcpManager.close();
+    };
+    process.on("exit", closeMcp);
+    process.on("SIGINT", () => {
+      closeMcp();
+      process.exit(0);
+    });
+  }
+
   const settingsLoader = new SettingsLoader();
   const settingsWriter = new SettingsWriter(settingsLoader);
   const agent = await createCodingAgent({
@@ -80,12 +101,13 @@ if (args.length > 0) {
       loadAllowList: (cwd) => settingsLoader.loadAllowList(cwd),
       persistAllowedTool: (cwd, toolName) => settingsWriter.appendAllowedTool(cwd, toolName),
     },
+    requiresApprovalFor: mcpManager ? (toolName) => mcpManager.requiresApproval(toolName) : undefined,
   });
   const session = await createCodingSession({ cwd: process.cwd() });
   const commands: SlashCommand[] = await loadAvailableCommands(skillsDirs);
 
   render(
-    <AgentLoopProvider agent={agent} session={session} commands={commands}>
+    <AgentLoopProvider agent={agent} session={session} commands={commands} toolProvider={mcpManager}>
       <App commands={commands} supportProjectWideAllow />
     </AgentLoopProvider>,
     { patchConsole: false },

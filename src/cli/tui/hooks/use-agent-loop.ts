@@ -1,7 +1,7 @@
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
-import { AgentRunner, Session, type Agent, type TurnRun } from "@/agent";
+import { AgentRunner, Session, type Agent, type EffectiveToolProvider, type TurnRun } from "@/agent";
 import type { AssistantMessage, NonSystemMessage, UserMessage } from "@/foundation";
 
 import type { PromptSubmission, SlashCommand } from "../command-registry";
@@ -24,11 +24,13 @@ export function AgentLoopProvider({
   agent,
   session,
   commands = [],
+  toolProvider,
   children,
 }: {
   agent: Agent;
   session: Session;
   commands?: SlashCommand[];
+  toolProvider?: EffectiveToolProvider;
   children: ReactNode;
 }) {
   const [streaming, setStreaming] = useState(false);
@@ -55,7 +57,7 @@ export function AgentLoopProvider({
   const runTurn = useCallback(
     async (turnId: string) => {
       const runSession = sessionRef.current;
-      const run = new AgentRunner().startTurn({ session: runSession, agent, turnId });
+      const run = new AgentRunner().startTurn({ session: runSession, agent, turnId, toolProvider });
       currentRunRef.current = run;
 
       let runError: unknown;
@@ -75,7 +77,7 @@ export function AgentLoopProvider({
         throw runError;
       }
     },
-    [agent],
+    [agent, toolProvider],
   );
 
   const onSubmit = useCallback(

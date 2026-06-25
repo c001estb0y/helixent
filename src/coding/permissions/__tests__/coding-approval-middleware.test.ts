@@ -28,6 +28,32 @@ describe("createCodingApprovalMiddleware", () => {
     expect(result).toBeUndefined();
   });
 
+  test("asks user for tools matched by the dynamic requiresApprovalFor predicate", async () => {
+    let askedName: string | undefined;
+    const middleware = createCodingApprovalMiddleware({
+      cwd: "/tmp",
+      requiresApproval: ["bash"],
+      requiresApprovalFor: (name) => name.startsWith("mcp_"),
+      askUser: async (toolUse) => {
+        askedName = toolUse.name;
+        return "allow_once" as ApprovalDecision;
+      },
+    });
+
+    const allowed = await middleware.beforeToolUse?.({
+      agentContext: mockAgentContext,
+      toolUse: makeToolUse("read_file"),
+    });
+    expect(allowed).toBeUndefined();
+    expect(askedName).toBeUndefined();
+
+    await middleware.beforeToolUse?.({
+      agentContext: mockAgentContext,
+      toolUse: makeToolUse("mcp_memory_search"),
+    });
+    expect(askedName).toBe("mcp_memory_search");
+  });
+
   test("asks user for tools in the requiresApproval list", async () => {
     let asked = false;
     const middleware = createCodingApprovalMiddleware({

@@ -38,6 +38,7 @@ export async function createCodingAgent({
   askUser,
   askUserQuestion,
   approvalPersistence,
+  requiresApprovalFor,
 }: {
   model: Model;
   cwd?: string;
@@ -47,6 +48,9 @@ export async function createCodingAgent({
   // eslint-disable-next-line no-unused-vars
   askUserQuestion?: (params: AskUserQuestionParameters) => Promise<AskUserQuestionResult>;
   approvalPersistence?: ApprovalPersistence;
+  /** Dynamic approval predicate for tools not in the static list (e.g. MCP tools). */
+  // eslint-disable-next-line no-unused-vars
+  requiresApprovalFor?: (toolName: string) => boolean;
 }) {
   setWorkspaceBaseDir(cwd);
   const bashTool = createBashTool({ cwd });
@@ -61,6 +65,7 @@ export async function createCodingAgent({
       createCodingApprovalMiddleware({
         cwd,
         requiresApproval: CODING_TOOLS_REQUIRING_APPROVAL,
+        requiresApprovalFor,
         askUser,
         approvalPersistence,
       }),
