@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
 import {
+  defineJsonSchemaTool,
   defineTool,
   Model,
   type AssistantMessage,
@@ -81,6 +82,52 @@ describe("AgentRunner", () => {
         content: [{ type: "text", text: "Implement the ADR" }],
       },
     ]);
+  });
+
+  test("merges runtime MCP tools with agent tools for each provider request", async () => {
+    const provider = new SequenceProvider([
+      {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tool-use-1", name: "mcp_memory_search", input: { query: "hi" } }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Done" }],
+      },
+    ]);
+    const agentTool = defineTool({
+      name: "agent_tool",
+      description: "Agent tool",
+      parameters: z.object({}),
+      invoke: async () => "agent-result",
+    });
+    let mcpCallArgs: Record<string, unknown> | undefined;
+    const mcpTool = defineJsonSchemaTool({
+      name: "mcp_memory_search",
+      description: "Search memory",
+      jsonSchema: { type: "object", properties: { query: { type: "string" } } },
+      invoke: async (input) => {
+        mcpCallArgs = input;
+        return { ok: true, summary: "memory hit" };
+      },
+    });
+    const agent = new Agent({
+      id: "agent-1",
+      model: new Model("fake-model", provider),
+      prompt: "Use tools.",
+      tools: [agentTool],
+    });
+    const session = new Session({ id: "session-1" });
+    const turn = session.createTurn({ agentId: agent.id, input: "search" });
+    const toolProvider = { getEffectiveTools: () => [mcpTool] };
+
+    const run = new AgentRunner().startTurn({ session, agent, turnId: turn.id, toolProvider });
+    await run.done;
+
+    expect(provider.calls[0]?.tools?.map((tool) => tool.name)).toEqual(["agent_tool", "mcp_memory_search"]);
+    expect(mcpCallArgs).toEqual({ query: "hi" });
+    const toolMessage = session.messages.find((message) => message.role === "tool");
+    expect(JSON.parse(toolMessage!.content[0]!.content)).toMatchObject({ summary: "memory hit" });
   });
 
   test("runs tool calls in parallel and records tool results as each finishes", async () => {

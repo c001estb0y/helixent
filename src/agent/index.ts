@@ -3,6 +3,7 @@ export * from "./agent-event";
 export * from "./agent-middleware";
 export * from "./agent-runner";
 export * from "./compaction";
+export * from "./effective-tools";
 export * from "./prompt-assembly";
 export * from "./prompt-context";
 export * from "./session";

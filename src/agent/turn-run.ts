@@ -18,6 +18,7 @@ import {
   selectPreservedTail,
   serializeCompactionSourceMaterial,
 } from "./compaction";
+import { type EffectiveToolProvider, mergeEffectiveTools } from "./effective-tools";
 import { renderModelRequest } from "./prompt-assembly";
 import type { EffectivePromptContext, PromptContextItem } from "./prompt-context";
 import type { Session, SessionMessage, TurnId } from "./session";
@@ -29,6 +30,7 @@ export interface TurnRunOptions {
   session: Session;
   agent: Agent;
   turnId: TurnId;
+  toolProvider?: EffectiveToolProvider;
 }
 
 /**
@@ -41,6 +43,8 @@ export class TurnRun {
   private readonly _session: Session;
   private readonly _agent: Agent;
   private readonly _turnId: TurnId;
+  private readonly _toolProvider?: EffectiveToolProvider;
+  private _effectiveTools: Tool[] = [];
   private readonly _runId: string;
   private readonly _startedAtMs = Date.now();
   private readonly _abortController = new AbortController();
@@ -50,10 +54,11 @@ export class TurnRun {
   private _promptContextSnapshot: EffectivePromptContext | null = null;
   private _autoCompactFailed = false;
 
-  constructor({ session, agent, turnId }: TurnRunOptions) {
+  constructor({ session, agent, turnId, toolProvider }: TurnRunOptions) {
     this._session = session;
     this._agent = agent;
     this._turnId = turnId;
+    this._toolProvider = toolProvider;
     this._runId = session.nextRunId();
     this.events = this._events;
     this.done = this._run();
@@ -149,10 +154,11 @@ export class TurnRun {
   ): Promise<{ assistantMessage: AssistantMessage; requestId: string; durationMs: number }> {
     const modelContext: ModelContext = {
       prompt: this._context.prompt,
-      tools: this._context.tools,
+      tools: mergeEffectiveTools(this._context.tools, this._toolProvider),
       signal: this._abortController.signal,
     };
     await this._beforeModel(modelContext);
+    this._effectiveTools = modelContext.tools ?? [];
 
     const assembled = await this._assembleRequestAfterOptionalCompaction(modelContext);
     const requestId = this._session.nextRequestId();
@@ -360,7 +366,8 @@ export class TurnRun {
         startedAt,
       }, { toolUseId: toolUse.id });
       try {
-        const tool = this._context.tools?.find((candidate) => candidate.name === toolUse.name);
+        const toolSet = this._effectiveTools.length > 0 ? this._effectiveTools : (this._context.tools ?? []);
+        const tool = toolSet.find((candidate) => candidate.name === toolUse.name);
         if (!tool) throw new Error(`Tool ${toolUse.name} not found`);
         const beforeResult = await this._beforeToolUse(toolUse);
         if (beforeResult.skip) {
