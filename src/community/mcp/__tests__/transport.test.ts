@@ -3,7 +3,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, test } from "bun:test";
 
-import { createMcpTransport, resolveRemoteHeaders, resolveStdioEnvironment } from "../transport";
+import { buildStdioServerParameters, createMcpTransport, resolveRemoteHeaders, resolveStdioEnvironment } from "../transport";
 
 describe("resolveStdioEnvironment", () => {
   test("layers configured env on top of the minimal safe environment", () => {
@@ -34,6 +34,15 @@ describe("resolveRemoteHeaders", () => {
       { TOKEN_ENV: "Bearer abc" },
     );
     expect(headers).toEqual({ "X-Static": "1", Authorization: "Bearer abc" });
+  });
+});
+
+describe("buildStdioServerParameters", () => {
+  test("ignores the child process stderr so MCP logs do not corrupt the TUI", () => {
+    const params = buildStdioServerParameters({ command: "echo", args: ["hi"] });
+    expect(params.stderr).toBe("ignore");
+    expect(params.command).toBe("echo");
+    expect(params.args).toEqual(["hi"]);
   });
 });
 

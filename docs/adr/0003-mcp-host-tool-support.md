@@ -28,6 +28,8 @@ MCP tool results are normalized into Helixent structured tool results before ent
 
 MCP tools require approval by default unless server or tool configuration explicitly allows automatic execution. Tool calls are serial per MCP server by default, with explicit per-server opt-in for parallel calls. Optional MCP server startup failures do not block Helixent and contribute no visible tools; required MCP server failures prevent agent execution from starting. Stdio servers receive a minimal safe environment plus configured variables by default, with full environment inheritance only when explicitly configured.
 
+Stdio MCP servers commonly write diagnostic logs to their own stderr. Because Helixent's interactive surface is an Ink TUI that owns the terminal, the host discards stdio child-process stderr by default so server logs cannot corrupt TUI rendering; only the MCP protocol stream (child stdout) is consumed. The MCP manager lifecycle is owned by the CLI/app runtime: it is connected before the TUI renders, and closed on process exit on a best-effort basis. The TUI framework retains ownership of interactive interrupts (Ctrl+C / SIGINT); the host does not install a competing SIGINT handler, and relies on stdio child processes terminating with the parent.
+
 MCP configuration lives under the top-level `mcpServers` field. Configuration changes take effect on the next Helixent start in the MVP. Remote authentication supports static headers and explicit environment-derived headers; OAuth, browser login, token refresh, and header helper commands are out of scope.
 
 ## Considered Options

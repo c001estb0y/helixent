@@ -80,13 +80,11 @@ if (args.length > 0) {
       console.error(`[helixent] MCP startup failed: ${message}`);
       process.exit(1);
     }
-    const closeMcp = () => {
+    // Best-effort close on process exit. Ink owns Ctrl+C/SIGINT for the TUI, and
+    // stdio child processes are terminated with the parent, so we do not install a
+    // SIGINT handler that would short-circuit Ink's own shutdown.
+    process.on("exit", () => {
       void mcpManager.close();
-    };
-    process.on("exit", closeMcp);
-    process.on("SIGINT", () => {
-      closeMcp();
-      process.exit(0);
     });
   }
 

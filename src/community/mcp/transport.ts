@@ -1,6 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+  type StdioServerParameters,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
@@ -44,17 +48,27 @@ export function resolveRemoteHeaders(
   return headers;
 }
 
+/**
+ * Builds the stdio server parameters for a stdio MCP server.
+ *
+ * The child process stderr is discarded so MCP server logs never leak into the
+ * parent terminal and corrupt the Ink TUI rendering.
+ */
+export function buildStdioServerParameters(config: McpStdioServerConfig): StdioServerParameters {
+  return {
+    command: config.command,
+    args: config.args,
+    env: resolveStdioEnvironment(config),
+    cwd: config.cwd,
+    stderr: "ignore",
+  };
+}
+
 /** Builds the SDK transport for a server configuration entry. */
 export function createMcpTransport(config: McpServerConfig): Transport {
   const type = config.type ?? "stdio";
   if (type === "stdio") {
-    const stdio = config as McpStdioServerConfig;
-    return new StdioClientTransport({
-      command: stdio.command,
-      args: stdio.args,
-      env: resolveStdioEnvironment(stdio),
-      cwd: stdio.cwd,
-    });
+    return new StdioClientTransport(buildStdioServerParameters(config as McpStdioServerConfig));
   }
   const http = config as McpHttpServerConfig;
   const url = new URL(http.url);
